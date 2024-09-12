@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Stock Price Prediction App</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="backdrop"></div>
+    <div class="container">
+        <label class="switch">
+            <input type="checkbox" id="darkModeToggle">
+            <span class="slider"></span>
+        </label>
+        <h1>Advanced Stock Price Prediction App</h1>
+        
+        <section id="intro" class="info-section">
+            <h2>Introduction to Time Series Analysis</h2>
+            <p>Time series analysis is a statistical technique that deals with time series data, or trend analysis. Time series data is a series of data points indexed in time order. Time series analysis comprises methods for analyzing time series data in order to extract meaningful statistics and other characteristics of the data.</p>
+        </section>
+
+        <div class="input-section">
+            <input type="text" id="symbol" placeholder="Enter stock symbol (e.g., AAPL)">
+            <input type="date" id="startDate">
+            <input type="date" id="endDate">
+            <select id="model" onchange="updateModelInfo()">
+                <option value="arima">ARIMA</option>
+                <option value="sarima">SARIMA</option>
+                <option value="garch">GARCH</option>
+                <option value="lstm">LSTM</option>
+            </select>
+            <button onclick="fetchData()">Predict</button>
+        </div>
+
+        <section id="modelExplanation" class="info-section">
+            <h2>Model Explanation</h2>
+            <div id="modelDescription"></div>
+        </section>
+
+        <div id="loading" class="loading">Loading...</div>
+
+        <div class="chart-container">
+            <canvas id="stockChart"></canvas>
+        </div>
+
+        <section id="modelComponents" class="info-section">
+            <h2>Model Components</h2>
+            <div id="componentCharts"></div>
+        </section>
+
+        <section id="performanceMetrics" class="info-section">
+            <h2>Performance Metrics</h2>
+            <div id="metricsContainer"></div>
+        </section>
+
+        <div id="modelInfo" class="model-info"></div>
+
+        <section id="glossary" class="info-section">
+            <h2>Glossary of Terms</h2>
+            <dl id="glossaryList"></dl>
+        </section>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
