@@ -16,6 +16,7 @@ import warnings
 import logging
 import traceback
 import sys
+import os
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -246,4 +247,5 @@ async def predict_stock(symbol: str, start_date: str, end_date: str, model: str)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
