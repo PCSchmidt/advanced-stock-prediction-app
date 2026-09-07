@@ -19,11 +19,11 @@ A reviewer can clone this repo, run one command, and see a forecasting app with 
 
 ## Stage 1 - Build (forecasting core)
 
-- [ ] Data layer: fetch and cache price data from a documented free source.
-- [ ] Feature engineering: documented features (returns, lags, rolling stats). Justify choices.
-- [ ] Baseline model: persistence/naive forecast as the thing to beat.
-- [ ] Primary model: gradient-boosted or lightweight neural approach, kept simple.
-- [ ] Walk-forward validation harness with no leakage.
+- [x] Data layer: fetch and cache price data from a documented free source.
+- [x] Feature engineering: documented features (returns, lags, rolling stats). Justify choices.
+- [x] Baseline model: persistence/naive forecast as the thing to beat.
+- [x] Primary model: gradient-boosted or lightweight neural approach, kept simple.
+- [x] Walk-forward validation harness with no leakage.
 
 **Acceptance:** Both baseline and primary model produce forecasts through the same validation harness.
 
