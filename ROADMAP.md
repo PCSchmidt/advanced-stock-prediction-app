@@ -72,13 +72,21 @@ uvicorn; no torch-class dependencies).
 
 ## Stage 5 - Monitor (the differentiator)
 
-- [ ] Drift detection: monitor feature/prediction distribution shift over time (e.g., PSI or KS test on rolling windows).
-- [ ] Structured logging of requests, forecast latency, and errors.
-- [ ] Metrics endpoint exposing: request count, latency percentiles, error rate, drift signal.
-- [ ] Optional: Prometheus/Grafana dashboard.
-- [ ] Document "what could degrade" (regime change, data source changes, feature drift).
+- [x] Drift detection: monitor feature/prediction distribution shift over time (e.g., PSI or KS test on rolling windows). (`src/stock_prediction/drift.py`: PSI (5 quantile bins) + two-sample KS on the daily log-return distribution; windows = first-half vs second-half of one series or two full series; FIRES at PSI >= 0.25 (Siddiqi 2006 bands: <0.1 stable / 0.1-0.25 moderate / >=0.25 significant) or KS p <= 0.01 -- the documented signal that WOULD trigger a retrain; the retrain itself is Stage 6 and is NOT implemented. Recorded fixture numbers in `experiments/drift_log.md` (regenerate with `make drift`); fires on vol_regime_shift halves (PSI 1.13) and on sample_daily vs trending_up / vol_regime_shift; stays quiet on matched halves, sample_daily vs mean_reverting, and self-comparison. Deterministic offline tests in `tests/test_drift.py`.)
+- [x] Structured logging of requests, forecast latency, and errors. (`src/stock_prediction/obs.py`: one JSON line per request on stdout via app middleware -- request_id, method, endpoint, status, latency_ms, error_class (e.g. http_400), drift_signal; fixed field allowlist, no secrets (none exist); shared by uvicorn serving and the CLI (`python -m stock_prediction.cli --json-logs`).)
+- [x] Metrics endpoint exposing: request count, latency percentiles, error rate, drift signal. (`GET /metrics`: JSON with request_count, error_count, error_rate, latency_ms p50/p95/p99, and last_drift; in-process counters only -- reset on restart, no persistence, no cross-replica aggregation.)
+- [ ] Optional: Prometheus/Grafana dashboard. (Left unchecked deliberately: no extra containers, no Prometheus text endpoint, no dashboard. GET /metrics is plain JSON and the README says exactly that.)
+- [x] Document "what could degrade" (regime change, data source changes, feature drift). (README Operational notes "What could degrade, and the signal above" ties each failure mode to the drift signal; Limitations state detection is on synthetic fixtures only, no alerting, no live-data validation.)
 
 **Acceptance:** A reviewer can see how drift is detected and what signals would trigger a retrain.
+
+**Stage 5 note:** Detection is PSI (5 quantile bins) + KS on the daily
+log-return distribution between two windows; the documented retrain signal is
+PSI >= 0.25 or KS p <= 0.01 on freshly observed data. Threshold rationale and
+the 10-bin noise finding are in drift.py and README Monitor; recorded fixture
+numbers are in `experiments/drift_log.md`. The optional Prometheus/Grafana box
+stays unchecked (no new containers; GET /metrics is JSON only). Verified
+end-to-end on this branch with docker compose (see README runbook note).
 
 ## Stage 6 - Maintain
 

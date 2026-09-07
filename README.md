@@ -108,10 +108,65 @@ What the numbers say (honestly):
   synthetic random walks; it is recorded as the Stage 2 baseline comparison,
   not hidden. Any future tuning must beat these recorded numbers.
 
+## Monitor (Stage 5 drift detection)
+
+Stage 5 adds read-only drift detection (`src/stock_prediction/drift.py`): the
+detector compares the daily log-return distribution between two windows with
+PSI (5 quantile bins) and a two-sample KS test. It fits nothing and predicts
+nothing; the models, features, and `min_train_rows` are exactly the Stage 1-2
+ones, and the Stage 2 results above are unchanged.
+
+- **Windows.** Within one series: first half vs second half, split at the
+  midpoint row. Between two series: full baseline vs full candidate. Log
+  returns are computed within each window.
+- **Thresholds (the documented signal that WOULD trigger a retrain).** A
+  comparison fires when `PSI >= 0.25` (significant band of the standard
+  Siddiqi 2006 credit-scoring convention: < 0.1 stable, 0.1-0.25 moderate,
+  > 0.25 significant) or when the KS p-value `<= 0.01`. 5 bins (not the
+  conventional 10) because with ~150 observations per window a 10-bin PSI is
+  noise-dominated (matched halves of stationary fixtures scored PSI ~ 0.32
+  with 10 bins, above the retrain line; < 0.05 with 5).
+- **Why only log returns.** The lag features are the same series shifted, and
+  rolling mean/std windows overlap so heavily that a KS test on them is
+  anti-conservative at n~150 (see drift.py docstring for the measured
+  example). The log-return series has no such overlap.
+
+Recorded numbers (`make drift` regenerates `experiments/drift_log.md`;
+deterministic on the committed fixtures):
+
+| Comparison | PSI | Band | KS stat | KS p | Fired |
+| --- | --- | --- | --- | --- | --- |
+| sample_daily halves | 0.0362 | stable | 0.0940 | 0.528 | no |
+| trending_up halves | 0.0362 | stable | 0.0940 | 0.528 | no |
+| mean_reverting halves | 0.0170 | stable | 0.0738 | 0.813 | no |
+| vol_regime_shift halves | 1.1315 | significant | 0.3356 | <0.001 | YES |
+| sample_daily vs vol_regime_shift | 0.1549 | moderate | 0.1438 | 0.004 | YES |
+| sample_daily vs trending_up (mean drift) | 0.2394 | moderate | 0.1472 | 0.003 | YES |
+| sample_daily vs mean_reverting | 0.0659 | stable | 0.0936 | 0.145 | no |
+| sample_daily vs itself | 0.0000 | stable | 0.0000 | 1.000 | no |
+
+Reading: the known shifted pair (`vol_regime_shift`, whose sigma doubles
+halfway) fires decisively; matched windows of the stationary fixtures stay
+quiet; the pure mean-drift pair (`trending_up`) fires on the KS criterion
+while its PSI sits in the moderate band -- the +0.0008 mean shift is real but
+small next to sigma ~ 0.01-0.014. `sample_daily` vs `mean_reverting` stays
+quiet because the detector compares marginal distributions and cannot see the
+AR(1) autocorrelation difference (documented limitation, not hidden).
+
+Honest scope: every number above comes from committed SYNTHETIC fixtures.
+This is not production monitoring: there is no alerting, no scheduler, no
+24/7 process, and no live data behind these results.
+
 ## Limitations
 
-- No drift detection or retraining is implemented yet; those are Stage 5-6
-  work and nothing here should be read as implying they exist.
+- Drift detection (Stage 5) is read-only and runs on committed synthetic
+  fixtures. The retrain it would signal is Stage 6 and is NOT implemented:
+  no scheduler, no model swap, no rollback, no alerting anywhere in this
+  repository. Thresholds were recorded on synthetic walks; live-market
+  behavior of the thresholds is untested.
+- `GET /metrics` counters are per-process memory: they reset on restart and
+  aggregate nothing across processes. There is no Prometheus/Grafana stack
+  and no persistent metrics store.
 - All Stage 2 evaluation runs on committed synthetic series (random-walk-style
   fixtures), not real market data. Performance on synthetic walks is not
   market skill and demonstrates nothing about trading ability. Real data
@@ -159,6 +214,8 @@ python -c "from stock_prediction.data import fetch_prices; s = fetch_prices('AAP
 hist_gradient_boosting on all four committed fixtures through the unchanged
 walk-forward harness; offline, slower than `make test`, not part of CI) and
 rewrites `experiments/results.csv` and `experiments/eval_log.md`.
+`make drift` reruns the Stage 5 drift detector on the same fixtures (offline,
+fast, no model fitting) and rewrites `experiments/drift_log.md`.
 `make lint` runs ruff check + format check; `make clean` removes caches and the
 virtualenv. Dependencies are pinned in `requirements-lock.txt`; CI (GitHub
 Actions) runs lint and tests on every push and pull request.
@@ -242,6 +299,57 @@ offline):
 | `STOCK_PREDICTION_FIXTURE_DIR` | `<repo>/tests/fixtures` (source layout) | Directory holding the committed fixture CSVs. docker-compose sets it to `/app/tests/fixtures` because the package is installed into site-packages in the image. |
 | `ALLOW_LIVE_DATA` | unset (live disabled) | Set to `1` to allow `POST /forecast` with `source: "live"` (yfinance fetch; network required). Unset in the container, so the compose service is fixture-only. |
 
+### Monitoring endpoints and structured logs (Stage 5)
+
+Additive on top of the Stage 4 API; `/health` and `/forecast` contracts are
+unchanged (the `/forecast` response gained one `drift` field).
+
+- `drift` field on `POST /forecast`: the detector run on first-half vs
+  second-half of the closes that were just forecast (or an explicit
+  `"status": "skipped"` note when the series is shorter than 120 closes, e.g.
+  `max_rows: 90`). Read-only; a fired signal changes nothing about the
+  forecasts.
+- `GET /drift?fixture=<name>`: run the detector on demand -- first half vs
+  second half of one committed fixture, or `&baseline=<fixture>` for a
+  cross-fixture comparison. Unknown fixture names return 400.
+- `GET /metrics`: JSON with `request_count`, `error_count`, `error_rate`,
+  `latency_ms` (count/mean/p50/p95/p99), and `last_drift` (the most recent
+  detector result served by this process). In-process memory only: resets on
+  restart, aggregates nothing across processes. JSON, not Prometheus text
+  format -- no Prometheus/Grafana stack exists in this repository.
+- Structured logs: one JSON line per request on stdout (`request_id`,
+  `method`, `endpoint`, `status`, `latency_ms`, `error_class` such as
+  `http_400`, and `drift_signal` when a forecast/drift path ran). There are
+  no secrets in this app and none are logged; the field set is a fixed
+  allowlist. The same layer serves the CLI:
+  `python -m stock_prediction.cli --fixture ... --drift --json-logs` prints
+  the walk-forward smoke plus the drift report and JSON event lines.
+
+### What could degrade, and the signal above
+
+Each failure mode below is tied to the drift signal documented in Monitor:
+
+- **Regime change** (volatility or trend shift in the market): the daily
+  log-return distribution moves -> PSI crosses 0.25 or KS p <= 0.01 -> the
+  documented retrain signal fires (as it does on the `vol_regime_shift` and
+  `trending_up` fixture comparisons).
+- **Data-source change** (yfinance schema or adjustment changes, or a switch
+  to another vendor): the served closes' distribution would drift against a
+  committed baseline via `GET /drift?...&baseline=...`. Additionally, bundle
+  manifests record fixture sha256/row count/date range (Stage 3), so a
+  re-trained bundle would carry a different data identity. There is no
+  automated source-identity gate in the serving path -- detection is manual
+  drift review, not enforcement.
+- **Feature drift**: features are deterministic transforms of closes, so any
+  feature drift is return-distribution drift; the detector monitors the
+  return series directly (lag features are its shifts; rolling features are
+  documented as unmonitored in drift.py).
+- **Fixture-vs-live mismatch**: all thresholds and all recorded numbers were
+  calibrated on synthetic random walks. Live returns have fat tails, gaps,
+  and regime structure the fixtures do not; the 0.25/0.01 thresholds are a
+  starting point, not validated production settings. No live-data validation
+  has been run, and none is claimed.
+
 ### Deploy target decision
 
 Local Docker Compose is the deploy target: it is the reproducible minimum and
@@ -268,6 +376,8 @@ curl -s --noproxy "*" http://127.0.0.1:8000/health
 curl -s --noproxy "*" -X POST http://127.0.0.1:8000/forecast \
   -H "Content-Type: application/json" \
   -d "{"model": "both", "max_rows": 120, "last_k": 3}"
+curl -s --noproxy "*" "http://127.0.0.1:8000/drift?fixture=vol_regime_shift"  # Stage 5
+curl -s --noproxy "*" http://127.0.0.1:8000/metrics                           # Stage 5
 docker compose down
 ```
 
@@ -279,6 +389,27 @@ default body (`{}`) returned both models at the full 219 origins; an unknown
 fixture name returned HTTP 400; `source: "live"` in the container returned
 HTTP 403 (env gate off); `docker compose down` stopped and removed the
 container cleanly.
+
+Stage 5 verification (same branch setup, Docker 29.7.2): `docker compose
+build api && docker compose up -d api`; `GET /health` -> HTTP 200
+`{"status":"ok"}`; `POST /forecast` (`model=persistence`, `max_rows=120`) ->
+HTTP 200 with the `drift` field present (`fired: false`, PSI 0.0723 stable
+over 59+59 log returns); `GET /drift?fixture=vol_regime_shift` -> HTTP 200,
+`fired: true` (PSI 1.1315, significant); `GET /drift` (default sample_daily)
+-> `fired: false`; unknown fixture -> HTTP 400; `GET /metrics` -> HTTP 200
+with `request_count: 7`, `error_count: 1`, `error_rate: 0.142857`, latency
+p50/p95/p99, and `last_drift` populated; `docker logs` showed one JSON line
+per request, e.g. `{"ts": "...", "level": "INFO", "logger":
+"stock_prediction", "event": "http_request", "request_id": "481f156c9741",
+"method": "POST", "endpoint": "/forecast", "status": 400, "latency_ms": 0.94,
+"error_class": "http_400", "drift_signal": null}`; `docker compose down`
+removed the container and network cleanly. `docker image inspect` reports
+`stock-prediction:local` at 197 MB (the Stage 4 note's 833 MB figure does not
+reproduce with `docker image inspect`; the lockfile is unchanged, so the
+installed contents are the same either way). The CLI side was verified with
+`python -m stock_prediction.cli --fixture tests/fixtures/vol_regime_shift.csv
+--model persistence --drift --json-logs` (drift report JSON + structured
+event lines on stdout).
 
 Windows Git Bash notes: `curl` ships with Git Bash. Use `--noproxy "*"` if a
 proxy env var would otherwise intercept localhost; single-quote the JSON body

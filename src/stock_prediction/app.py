@@ -17,6 +17,22 @@ Run locally:
 
 Interactive request/response schema docs are served at /docs (Swagger UI).
 
+Stage 5 monitoring (additive; nothing about /health or /forecast changed):
+
+- Every POST /forecast response carries a `drift` object: the Stage 5
+  detector (drift.py) run on first-half vs second-half of the closes that
+  were just forecast, or an explicit "skipped" note when the series is too
+  short for two stable windows. The detector only READS closes; a fired
+  signal changes nothing about the forecasts.
+- GET /drift runs the same detector on demand: on one fixture's halves by
+  default, or between two fixtures with ?baseline=<fixture>.
+- GET /metrics returns in-process JSON counters: request count, latency
+  p50/p95/p99, error rate, and the last drift signal. Per-process memory
+  only; no Prometheus/Grafana, no persistence, no alerting.
+- Every request logs ONE structured JSON line to stdout (obs.py): request
+  id, method, endpoint, status, latency in ms, error class, and the drift
+  signal when a drift path ran. No secrets exist here and none are logged.
+
 Status codes:
 - 200: success (health or forecast).
 - 400: semantically invalid request the schema cannot express -- unknown
@@ -32,13 +48,16 @@ Status codes:
 from __future__ import annotations
 
 import os
+import uuid
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from .drift import MIN_WINDOW_ROWS, DriftReport, compare_windows, detect_drift
 from .metrics import MetricReport, compute_result_metrics
+from .obs import RequestMetrics, log_event, now_ms
 from .walkforward import Forecast, run_all_models
 
 # Committed offline fixtures shipped with the repo. Names only -- the API never
@@ -51,8 +70,41 @@ app = FastAPI(
         "Educational one-step-ahead stock forecasting (walk-forward harness, "
         "offline fixtures by default). Not investment advice; not production."
     ),
-    version="0.1.0",
+    version="0.2.0",
 )
+
+# Stage 5 observability state: per-process counters + one JSON log line per
+# request. Resets on restart; aggregates nothing across processes.
+metrics = RequestMetrics()
+
+
+@app.middleware("http")
+async def observe_requests(request: Request, call_next):
+    """Log one structured line per request and feed the /metrics counters."""
+    request_id = uuid.uuid4().hex[:12]
+    started = now_ms()
+    response = None
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        status = response.status_code if response is not None else 500
+        error_class = f"http_{status}" if status >= 400 else None
+        latency_ms = now_ms() - started
+        metrics.record(status=status, latency_ms=latency_ms)
+        drift_signal = getattr(request.state, "drift_fired", None)
+        log_event(
+            "http_request",
+            request_id=request_id,
+            method=request.method,
+            endpoint=request.url.path,
+            status=status,
+            latency_ms=round(latency_ms, 3),
+            error_class=error_class,
+            drift_signal=drift_signal,
+        )
+        if response is not None:
+            response.headers["x-request-id"] = request_id
 
 
 def _fixture_dir() -> Path:
@@ -133,11 +185,35 @@ class ModelSummary(BaseModel):
 
 
 class ForecastResponse(BaseModel):
-    """POST /forecast response. Small by design: summary stats + last-k only."""
+    """POST /forecast response. Small by design: summary stats + last-k only.
+
+    `drift` (Stage 5, additive) is the detector output for the closes that
+    were just forecast -- first half vs second half -- or an explicit
+    "skipped" note when the series is too short for two stable windows.
+    """
 
     source: str
     n_rows: int
     models: list[ModelSummary]
+    drift: dict[str, object]
+
+
+def _drift_for_closes(closes, label: str) -> dict[str, object]:
+    """Stage 5 drift check on the closes being served (read-only).
+
+    Returns the detector report, or an explicit skipped note when the series
+    is shorter than two minimum windows (e.g. max_rows=90 requests).
+    """
+    if len(closes) < 2 * MIN_WINDOW_ROWS:
+        return {
+            "status": "skipped",
+            "reason": (
+                f"drift needs >= {2 * MIN_WINDOW_ROWS} closes for two "
+                f"stable windows, got {len(closes)}"
+            ),
+        }
+    report = detect_drift(closes, label=label)
+    return report.as_dict()
 
 
 def _point(f: Forecast) -> ForecastPoint:
@@ -172,9 +248,10 @@ def health() -> dict[str, str]:
 
 
 @app.post("/forecast", response_model=ForecastResponse)
-def forecast(req: ForecastRequest) -> ForecastResponse:
+def forecast(req: ForecastRequest, request: Request) -> ForecastResponse:
     """Run the real walk-forward harness on a committed fixture (or live data,
-    if double-gated on) and return per-model summary stats + the last-k forecasts."""
+    if double-gated on) and return per-model summary stats, the last-k
+    forecasts, and the Stage 5 drift signal for the same closes."""
     if req.source == "live":
         if os.environ.get("ALLOW_LIVE_DATA") != "1":
             raise HTTPException(
@@ -219,8 +296,69 @@ def forecast(req: ForecastRequest) -> ForecastResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # Stage 5 (additive): read-only drift check on the closes just forecast.
+    drift_report = _drift_for_closes(closes, source_label)
+    request.state.drift_fired = drift_report.get("fired")
+    if isinstance(drift_report.get("fired"), bool):
+        metrics.set_drift(drift_report)
+
     return ForecastResponse(
         source=source_label,
         n_rows=len(closes),
         models=[_summary(r, compute_result_metrics(r), req.last_k) for r in results],
+        drift=drift_report,
     )
+
+
+@app.get("/drift")
+def drift_endpoint(
+    request: Request,
+    fixture: str = "sample_daily",
+    baseline: str | None = None,
+) -> dict[str, object]:
+    """Run the Stage 5 detector on demand.
+
+    Default: first half vs second half of `fixture`. With `baseline=<fixture>`,
+    compares the full `fixture` series against the full `baseline` series
+    instead (e.g. /drift?fixture=vol_regime_shift&baseline=sample_daily).
+    The detector only READS committed fixtures; a fired signal is a
+    documented recommendation, and nothing here retrains (Stage 6, not built).
+    """
+    for name in filter(None, (fixture, baseline)):
+        if name not in KNOWN_FIXTURES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown fixture {name!r}; known fixtures: " + ", ".join(KNOWN_FIXTURES),
+            )
+    from .data import load_csv
+
+    fixture_dir = _fixture_dir()
+    try:
+        closes = load_csv(fixture_dir / f"{fixture}.csv")
+        baseline_closes = load_csv(fixture_dir / f"{baseline}.csv") if baseline else None
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="fixture file not found on this server; check STOCK_PREDICTION_FIXTURE_DIR",
+        ) from exc
+
+    if baseline_closes is not None:
+        report: DriftReport = compare_windows(
+            baseline_closes,
+            closes,
+            expected_label=f"baseline:{baseline}",
+            actual_label=f"candidate:{fixture}",
+        )
+    else:
+        report = detect_drift(closes, label=fixture)
+    request.state.drift_fired = report.fired
+    metrics.set_drift(report.as_dict())
+    return report.as_dict()
+
+
+@app.get("/metrics")
+def metrics_endpoint() -> dict[str, object]:
+    """In-process service counters: request count, latency percentiles, error
+    rate, and the last drift signal. Per-process memory only -- no
+    Prometheus/Grafana, no persistence, no alerting (documented honestly)."""
+    return metrics.snapshot()
