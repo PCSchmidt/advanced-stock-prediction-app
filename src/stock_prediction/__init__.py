@@ -9,7 +9,7 @@ features with a no-lookahead contract, a persistence baseline and a gradient
 boosting primary model running through one expanding-origin walk-forward
 harness. Stage 5 adds read-only drift detection (`drift.py`, PSI + KS on the
 daily log-return distribution) with a documented retrain threshold; the
-retrain itself is Stage 6 and is not implemented.
+drift-gated retrain and rollback are Stage 6 (`maintain.py`, on-demand CLI).
 """
 
 __version__ = "0.1.0"

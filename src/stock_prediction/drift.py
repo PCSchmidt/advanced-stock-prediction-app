@@ -54,6 +54,9 @@ noise-dominated (matched halves of stationary fixtures score PSI ~ 0.32 with
 quantile bins; matched stationary halves then score PSI < 0.05 while the
 known-shifted comparisons still clear the 0.25 / KS lines comfortably.
 
+This module still does not retrain; the drift-gated retrain and rollback
+live in maintain.py (Stage 6), executed only on demand.
+
 Recorded fixture behavior (see experiments/drift_log.md and README Monitor):
 fires on vol_regime_shift halves (PSI 1.13), on sample_daily vs
 vol_regime_shift (KS p 0.004), and on sample_daily vs trending_up mean drift
@@ -63,7 +66,8 @@ compared with itself.
 
 Scope honesty: every number this module can produce in this repository comes
 from committed SYNTHETIC fixtures, not production traffic. There is no
-alerting, no scheduler, and no retrain -- only the documented signal above.
+alerting and no scheduler anywhere in this repository; the only consumer of
+the fired signal is the on-demand maintain CLI (maintain.py, Stage 6).
 """
 
 from __future__ import annotations
@@ -166,8 +170,8 @@ class DriftReport:
     def retrain_recommended(self) -> bool:
         """True iff the monitored distribution crossed a firing threshold.
 
-        This is a SIGNAL only. Nothing in this repository retrains, swaps, or
-        rolls back a model in response to it (Stage 6, not implemented).
+        This is a SIGNAL only. The response to it -- drift-gated retrain +
+        rollback -- lives in maintain.py (Stage 6) and runs only on demand.
         """
         return self.fired
 

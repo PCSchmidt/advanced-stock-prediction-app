@@ -322,7 +322,8 @@ def drift_endpoint(
     compares the full `fixture` series against the full `baseline` series
     instead (e.g. /drift?fixture=vol_regime_shift&baseline=sample_daily).
     The detector only READS committed fixtures; a fired signal is a
-    documented recommendation, and nothing here retrains (Stage 6, not built).
+    documented recommendation, and nothing in the serving path retrains --
+    the drift-gated retrain is the offline maintain CLI (Stage 6).
     """
     for name in filter(None, (fixture, baseline)):
         if name not in KNOWN_FIXTURES:

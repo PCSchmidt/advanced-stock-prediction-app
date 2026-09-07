@@ -12,7 +12,8 @@ Stage 5 options:
 
 - `--drift` runs the drift detector (drift.py, first half vs second half of
   the fixture) after the smoke and prints the report as JSON. It only READS
-  closes; nothing is retrained (that is Stage 6, not implemented).
+  closes; nothing here is retrained -- the drift-gated retrain is the
+  separate `python -m stock_prediction.maintain` command (Stage 6).
 - `--json-logs` emits the smoke events as structured JSON log lines on stdout
   (obs.py) in addition to the human-readable lines, so the same logging layer
   serves CLI and uvicorn contexts.
