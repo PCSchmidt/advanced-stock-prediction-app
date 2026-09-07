@@ -6,7 +6,7 @@ description = "Time-series stock forecasting with drift monitoring and retrainin
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.26",
     "pandas>=2.2",
@@ -19,7 +19,7 @@ dev = ["pytest>=8", "ruff>=0.6"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 extend-exclude = ["legacy"]
 
 [tool.pytest.ini_options]

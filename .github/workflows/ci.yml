@@ -11,10 +11,21 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # numpy 2.5.3 in requirements-lock.txt requires Python >=3.12
+          # (verified: pip install of the lock fails on 3.11).
+          python-version: "3.12"
       - name: Install dependencies
         run: pip install -r requirements-lock.txt
+      - name: Install package
+        run: pip install -e . --no-deps
       - name: Lint
         run: ruff check .
       - name: Test
         run: pytest -q
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image (build proof; no registry push)
+        run: docker build -t stock-prediction:ci .

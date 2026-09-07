@@ -8,7 +8,8 @@ import stock_prediction
 
 
 def test_python_version():
-    assert sys.version_info >= (3, 11)
+    # Floor is 3.12: the lock's numpy 2.5.3 requires >=3.12 (Docker-verified).
+    assert sys.version_info >= (3, 12)
 
 
 def test_package_import():
