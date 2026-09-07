@@ -6,7 +6,7 @@ else
     VENV_PY := .venv/bin/python
 endif
 
-.PHONY: setup test eval lint format clean
+.PHONY: setup test eval drift lint format clean
 
 setup:
 	python -m venv .venv
@@ -24,6 +24,12 @@ test:
 # `make test` / CI. Rewrites experiments/results.csv and experiments/eval_log.md.
 eval:
 	$(VENV_PY) experiments/run_eval.py
+
+# Stage 5 drift log: run the read-only drift detector on the committed
+# fixtures and rewrite experiments/drift_log.md. Offline and fast (no model
+# fitting); NOT part of `make test` / CI.
+drift:
+	$(VENV_PY) experiments/run_drift.py
 
 lint:
 	$(VENV_PY) -m ruff check .
