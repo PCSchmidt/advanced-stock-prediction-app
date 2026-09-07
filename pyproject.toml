@@ -2,20 +2,26 @@
 name = "stock_prediction"
 version = "0.1.0"
 description = "Time-series stock forecasting with drift monitoring and retraining (portfolio app)."
-
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+# NOTE: requires-python and dependencies belong in [project], not [build-system].
+# They were previously under [build-system], where pip/uv ignore them for the
+# project's own install requirements (found when regenerating the Stage 4 lock).
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.26",
     "pandas>=2.2",
     "scikit-learn>=1.4",
     "yfinance>=0.2.40",
+    # Stage 4 serving layer (FastAPI + uvicorn only; no second server stack).
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "ruff>=0.6", "httpx>=0.27"]  # httpx: fastapi TestClient backend
 
 [tool.ruff]
 line-length = 100
