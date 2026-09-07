@@ -1,0 +1,18 @@
+# Local run only (Stage 3): build the image and run an OFFLINE smoke.
+# Both services use committed fixtures; the lazy yfinance fetch path is never
+# imported, so no network access and no API keys are involved.
+services:
+  forecast-smoke:
+    build: .
+    image: stock-prediction:local
+    command: ["python", "-m", "stock_prediction.cli", "--fixture", "tests/fixtures/sample_daily.csv", "--model", "both"]
+
+  bundle-smoke:
+    build: .
+    image: stock-prediction:local
+    command:
+      - sh
+      - -c
+      - |
+        python -m stock_prediction.bundle --fixture tests/fixtures/sample_daily.csv --out /tmp/bundle &&
+        python -m stock_prediction.bundle --check /tmp/bundle

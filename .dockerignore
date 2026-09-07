@@ -1,0 +1,23 @@
+# Keep the build context small and secret-free.
+.git
+.venv
+venv
+.env
+.dockerignore
+
+# Local artifacts and caches (never baked into the image)
+artifacts/
+data/cache/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+src/*.egg-info/
+dist/
+build/
+
+# Reference material and host tooling, not needed in the image
+legacy/
+.github/
+.idea/
+.vscode/
