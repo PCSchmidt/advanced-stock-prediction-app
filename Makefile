@@ -6,7 +6,7 @@ else
     VENV_PY := .venv/bin/python
 endif
 
-.PHONY: setup test lint format clean
+.PHONY: setup test eval lint format clean
 
 setup:
 	python -m venv .venv
@@ -17,6 +17,13 @@ setup:
 test:
 	$(VENV_PY) -m pytest -q
 	$(VENV_PY) -m ruff check .
+
+# Stage 2 evaluation: persistence vs hist_gradient_boosting on all committed
+# fixtures, through the unchanged Stage 1 walk-forward harness. Offline, but
+# slower than test (a full GBM walk-forward per fixture), so it is NOT part of
+# `make test` / CI. Rewrites experiments/results.csv and experiments/eval_log.md.
+eval:
+	$(VENV_PY) experiments/run_eval.py
 
 lint:
 	$(VENV_PY) -m ruff check .

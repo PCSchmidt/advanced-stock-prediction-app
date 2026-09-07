@@ -66,27 +66,70 @@ python -m stock_prediction.cli --fixture tests/fixtures/sample_daily.csv --model
 
 ## Results
 
-No evaluation numbers are reported yet. Stage 1 verifies only that the
-persistence baseline and the linear primary model both emit forecasts through
-the same walk-forward harness on the committed fixture. Metrics (RMSE, MAE,
-directional accuracy) and the baseline-vs-primary comparison are Stage 2 work;
-no claim is made here about which model performs better.
+Stage 2 measured the Stage 1 pipeline as-is (no tuning). Both models ran through
+the same expanding-origin walk-forward harness on four committed offline
+fixtures (the original 300-day synthetic random walk plus three more synthetic
+regimes: trending, mean-reverting, volatility-regime-shift), scoring 219
+walk-forward origins per fixture (full window), split into first-half and
+second-half windows. Metrics are on the next-step log return the harness
+forecasts; full tables and definitions are in `experiments/eval_log.md` and
+`experiments/results.csv` (regenerate with `make eval`).
+
+Full-window results (RMSE/MAE in log-return units; dir. acc. = directional
+accuracy over side-taking forecasts; edge = mean(sign(predicted return) *
+realized return) of a long/flat strategy; always-long = mean realized return,
+context only):
+
+| Fixture | Model | n | RMSE | MAE | Dir. acc. | Edge | Always-long |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| sample_daily | persistence | 219 | 0.014733 | 0.011528 | n/a | 0.0 | -0.000816 |
+| sample_daily | hist_gradient_boosting | 219 | 0.016002 | 0.012762 | 0.534 | +0.001375 | -0.000816 |
+| trending_up | persistence | 219 | 0.009808 | 0.007636 | n/a | 0.0 | +0.000122 |
+| trending_up | hist_gradient_boosting | 219 | 0.010685 | 0.008519 | 0.521 | +0.000721 | +0.000122 |
+| mean_reverting | persistence | 219 | 0.011688 | 0.009096 | n/a | 0.0 | +0.000029 |
+| mean_reverting | hist_gradient_boosting | 219 | 0.013162 | 0.010449 | 0.484 | -0.001023 | +0.000029 |
+| vol_regime_shift | persistence | 219 | 0.015118 | 0.011254 | n/a | 0.0 | +0.000532 |
+| vol_regime_shift | hist_gradient_boosting | 219 | 0.016765 | 0.012242 | 0.479 | -0.000739 | +0.000532 |
+
+What the numbers say (honestly):
+
+- **The primary model does not beat the baseline on forecast accuracy.**
+  Persistence has lower RMSE and MAE than hist_gradient_boosting on all four
+  fixtures, in both half-windows as well as the full window.
+- **Directional accuracy is a coin flip.** GBM directional accuracy is
+  0.479-0.534 across fixtures (persistence takes no side, so its directional
+  accuracy is undefined, not zero).
+- **The edge proxy is mixed and tiny.** GBM's long/flat edge is positive on
+  sample_daily (+0.001375) and trending_up (+0.000721) - the only windows where
+  it beats both persistence's 0.0 and always-long - and negative on
+  mean_reverting (-0.001023) and vol_regime_shift (-0.000739). Magnitudes are
+  a few basis points per step at n=219 with no significance testing.
+- This is the expected outcome for one-step-ahead return forecasting on
+  synthetic random walks; it is recorded as the Stage 2 baseline comparison,
+  not hidden. Any future tuning must beat these recorded numbers.
 
 ## Limitations
 
 - No drift detection or retraining is implemented yet; those are Stage 5-6
   work and nothing here should be read as implying they exist.
-- No baseline-vs-primary comparison yet (Stage 2); no tuned or validated
-  hyperparameters.
+- All Stage 2 evaluation runs on committed synthetic series (random-walk-style
+  fixtures), not real market data. Performance on synthetic walks is not
+  market skill and demonstrates nothing about trading ability. Real data
+  requires the network fetch path, which CI does not exercise; no live-market
+  results are claimed anywhere in this repository.
+- n is small: 219 walk-forward origins per fixture (about half that per
+  half-window), four fixtures, no significance testing - every recorded number
+  is noisy.
+- Nothing is tuned: features, `min_train_rows`, and GBM hyperparameters are
+  exactly the Stage 1 defaults, and the recorded numbers reflect that as-is
+  state.
 - The leak-detection tests catch structural leaks (features reading future
   rows, the harness fitting on data at or after the origin). They cannot rule
   out every subtle leakage path.
-- Evaluation runs on a synthetic 300-day fixture, not real market data; real
-  data requires the network fetch path, which CI does not exercise.
 - One-step-ahead log-return forecasting on daily data has very low achievable
-  signal; any future metrics should be read with that in mind.
+  signal; the recorded metrics should be read with that in mind.
 - **Educational only. This is a personal portfolio project, not production
-  software, and not investment advice.**
+  software, and not investment advice. Nothing here is a live-market claim.**
 
 ## Operational notes
 
@@ -106,6 +149,10 @@ the yfinance fetch path. To fetch real prices interactively (network required):
 python -c "from stock_prediction.data import fetch_prices; s = fetch_prices('AAPL'); print(s.tail())"
 ```
 
+`make eval` reruns the Stage 2 evaluation (persistence vs
+hist_gradient_boosting on all four committed fixtures through the unchanged
+walk-forward harness; offline, slower than `make test`, not part of CI) and
+rewrites `experiments/results.csv` and `experiments/eval_log.md`.
 `make lint` runs ruff check + format check; `make clean` removes caches and the
 virtualenv. Dependencies are pinned in `requirements-lock.txt`; CI (GitHub
 Actions) runs lint and tests on every push and pull request.
