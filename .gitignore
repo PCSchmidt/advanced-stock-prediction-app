@@ -13,6 +13,9 @@ build/
 # Secrets / env
 .env
 
+# Downloaded price caches (live-fetch layer); fixtures under tests/ are committed
+data/cache/
+
 # IDE
 .idea/
 .vscode/
