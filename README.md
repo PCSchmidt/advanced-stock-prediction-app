@@ -119,7 +119,7 @@ ones, and the Stage 2 results above are unchanged.
 - **Windows.** Within one series: first half vs second half, split at the
   midpoint row. Between two series: full baseline vs full candidate. Log
   returns are computed within each window.
-- **Thresholds (the documented signal that WOULD trigger a retrain).** A
+- **Thresholds (the signal that triggers the Stage 6 retrain, on demand).** A
   comparison fires when `PSI >= 0.25` (significant band of the standard
   Siddiqi 2006 credit-scoring convention: < 0.1 stable, 0.1-0.25 moderate,
   > 0.25 significant) or when the KS p-value `<= 0.01`. 5 bins (not the
@@ -160,8 +160,10 @@ This is not production monitoring: there is no alerting, no scheduler, no
 ## Limitations
 
 - Drift detection (Stage 5) is read-only and runs on committed synthetic
-  fixtures. The retrain it would signal is Stage 6 and is NOT implemented:
-  no scheduler, no model swap, no rollback, no alerting anywhere in this
+  fixtures. The maintain loop it feeds (Stage 6) is an offline, ON-DEMAND
+  CLI: retraining runs only when a human executes it and the detector fires,
+  and rollback is a validated pointer switch. There is no scheduler, no
+  background process, no automated loop, and no alerting anywhere in this
   repository. Thresholds were recorded on synthetic walks; live-market
   behavior of the thresholds is untested.
 - `GET /metrics` counters are per-process memory: they reset on restart and
@@ -325,6 +327,107 @@ unchanged (the `/forecast` response gained one `drift` field).
   `python -m stock_prediction.cli --fixture ... --drift --json-logs` prints
   the walk-forward smoke plus the drift report and JSON event lines.
 
+### Maintain: drift-triggered retrain + rollback (Stage 6)
+
+`src/stock_prediction/maintain.py` closes the Stage 5 loop. Execution is
+strictly on demand and offline: a human runs the command after seeing a fired
+drift signal. There is no scheduler, no cron, no background process, and no
+alerting anywhere in this repository.
+
+```
+# drift-gated retrain: runs the Stage 5 detector first; retrains ONLY IF it
+# fires (PSI >= 0.25 or KS p <= 0.01); a quiet fixture no-ops with a message
+python -m stock_prediction.maintain --fixture tests/fixtures/vol_regime_shift.csv
+
+# manual on-demand retrain ignoring the drift gate (explicit override)
+python -m stock_prediction.maintain --fixture tests/fixtures/sample_daily.csv --force
+
+# point 'current' back to the previous bundle WITHOUT retraining
+python -m stock_prediction.maintain --rollback
+
+# point 'current' at an explicit bundle directory (validated first)
+python -m stock_prediction.maintain --rollback --to v1-vol_regime_shift-20260907T120000Z
+
+# show the current pointer and the bundle history
+python -m stock_prediction.maintain --status
+```
+
+Mechanics:
+
+- **Versioned bundles.** Every retrain writes a NEW directory
+  `artifacts/v<N>-<fixture-stem>-<UTC timestamp>/` through the UNCHANGED
+  Stage 3 machinery (`bundle.train_final_model` + `bundle.save_bundle`: same
+  Stage 1 features, sklearn-default HistGradientBoosting, same
+  `min_train_rows`). Existing bundles are never overwritten, and bundles stay
+  under gitignored `artifacts/`.
+- **Pointer.** The current model is a one-line file `artifacts/current`
+  naming a bundle directory (a name, not a copy or symlink). Retrain moves it
+  forward; rollback moves it back. No bundle file is ever rewritten, so
+  rollback is reversible by flipping the pointer again.
+- **Identity validation.** Every pointer switch validates the target first:
+  the bundle must load (`bundle.load_bundle`), its manifest must carry the
+  identity keys, its feature config must equal the Stage 1 defaults, and its
+  sklearn version must match the installed one. A failed validation raises
+  and leaves the pointer untouched.
+
+### Incident runbook (Stage 6)
+
+Three failure modes and the commands a reviewer can actually run (offline;
+the container variant is the same with `docker compose up -d api` first).
+The one fully executed incident, with real command output, is recorded in
+`experiments/incident.md`.
+
+**1. Data-source failure.**
+
+Symptoms: `POST /forecast` with `"source": "live"` returns `403` when the
+server was not started with `ALLOW_LIVE_DATA=1`; with the gate open but
+yfinance failing, `400` (`live fetch failed: ...`). An unknown fixture name
+is `400`; a fixture file missing on the server is `500`.
+
+```
+curl -s --noproxy "*" -X POST http://127.0.0.1:8000/forecast \
+  -H "Content-Type: application/json" -d '{"source": "live", "symbol": "AAPL"}'  # 403 by default
+curl -s --noproxy "*" -X POST http://127.0.0.1:8000/forecast \
+  -H "Content-Type: application/json" -d '{"fixture": "nope"}'                   # 400
+```
+
+Recovery: stay on the default fixture path, which is fully offline. The
+retrain path needs no network either (committed fixtures only). Do not set
+`ALLOW_LIVE_DATA=1` just to make a 403 go away; it exists for interactive
+use, not as a runbook step.
+
+**2. Drift alert (fired vs quiet).**
+
+Check the signal, then act only if it fired:
+
+```
+python -m stock_prediction.cli --fixture tests/fixtures/vol_regime_shift.csv --model persistence --drift
+# "fired": true (PSI 1.13, significant band)
+python -m stock_prediction.maintain --fixture tests/fixtures/vol_regime_shift.csv
+# writes a NEW v<N> bundle and moves artifacts/current to it
+python -m stock_prediction.maintain --status
+```
+
+A quiet fixture (`sample_daily`) writes nothing and prints a no-op message.
+If an alert turns out to be a false alarm, `--rollback` (below) restores the
+previous bundle.
+
+**3. Degraded accuracy.**
+
+The evaluation source of truth stays the recorded Stage 2 numbers
+(`experiments/eval_log.md`, `experiments/results.csv`; regenerate with
+`make eval`). There are no production SLOs in this repository and none are
+invented. If accuracy on the currently served data degrades against those
+recorded numbers:
+
+1. Re-run the drift check on the same series (case 2 above).
+2. If it fires, retrain into a new bundle (the only retrain path; same
+   Stage 1 features and defaults, so no tuning happens here either).
+3. If the new bundle underperforms, `python -m stock_prediction.maintain
+   --rollback` puts the previous model back without retraining; compare the
+   two manifests with `python -m stock_prediction.bundle --check
+   artifacts/<bundle-dir>`.
+
 ### What could degrade, and the signal above
 
 Each failure mode below is tied to the drift signal documented in Monitor:
@@ -332,7 +435,8 @@ Each failure mode below is tied to the drift signal documented in Monitor:
 - **Regime change** (volatility or trend shift in the market): the daily
   log-return distribution moves -> PSI crosses 0.25 or KS p <= 0.01 -> the
   documented retrain signal fires (as it does on the `vol_regime_shift` and
-  `trending_up` fixture comparisons).
+  `trending_up` fixture comparisons). The response is the on-demand Stage 6
+  command in the incident runbook below -- nothing fires automatically.
 - **Data-source change** (yfinance schema or adjustment changes, or a switch
   to another vendor): the served closes' distribution would drift against a
   committed baseline via `GET /drift?...&baseline=...`. Additionally, bundle

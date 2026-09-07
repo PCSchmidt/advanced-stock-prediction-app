@@ -90,10 +90,10 @@ end-to-end on this branch with docker compose (see README runbook note).
 
 ## Stage 6 - Maintain
 
-- [ ] Retraining path: scheduled or drift-triggered retrain that rebuilds the model from fresh data.
-- [ ] Rollback path: revert to a previous model version.
-- [ ] Runbook for common incidents (data source failure, drift alert, degraded accuracy).
-- [ ] One documented incident write-up (real or realistic) showing the maintain loop.
+- [x] Retraining path: scheduled or drift-triggered retrain that rebuilds the model from fresh data. (Drift-triggered ON-DEMAND, NOT scheduled: `python -m stock_prediction.maintain --fixture <csv>` runs the Stage 5 detector first and retrains via the unchanged `bundle.train_final_model`/`save_bundle` ONLY when it fires (PSI >= 0.25 or KS p <= 0.01; `--force` is the manual override); quiet fixtures no-op with a clear message. No cron/APScheduler/cloud scheduler of any kind -- the "fresh data" here is committed fixtures, never live. Each retrain writes a NEW versioned bundle dir `artifacts/v<N>-<fixture>-<UTC timestamp>` -- never overwrites -- then moves the `artifacts/current` pointer.)
+- [x] Rollback path: revert to a previous model version. (`python -m stock_prediction.maintain --rollback [--to NAME]` flips the `artifacts/current` pointer back without retraining or rewriting any bundle; the target's manifest identity is validated first -- bundle loads, identity keys present, feature config == Stage 1 defaults, sklearn version == installed -- and a failed validation leaves the pointer untouched. Offline tests in tests/test_maintain.py use tmp dirs.)
+- [x] Runbook for common incidents (data source failure, drift alert, degraded accuracy). (README Operational notes "Incident runbook (Stage 6)": live 403 without ALLOW_LIVE_DATA / failed live fetch or unknown fixture -> 400 / missing fixture file -> 500; drift alert fired-vs-quiet with the exact maintain commands; degraded accuracy -> the recorded Stage 2 numbers stay the eval source, no invented production SLOs, rollback as the undo. Every command is reviewer-runnable offline.)
+- [x] One documented incident write-up (real or realistic) showing the maintain loop. (experiments/incident.md: executed for real -- vol_regime_shift halves fire (PSI 1.1315) -> `maintain --fixture` writes a v2 bundle -> manifest identity changed (new created_at + new fixture sha256; same feature config, sklearn version, and git commit) -> `--rollback` points `artifacts/current` back to the v1 bundle -> v1 manifest identity restored. ACTUAL commands and outputs recorded as run, not a fictional outage narrative.)
 
 **Acceptance:** The maintain loop is documented and executable, not just described.
 
