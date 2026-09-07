@@ -37,13 +37,21 @@ A reviewer can clone this repo, run one command, and see a forecasting app with 
 
 ## Stage 3 - Ship (versioned, reproducible)
 
-- [ ] Model + code versioning: tag releases; pin data and model versions.
-- [ ] Artifact bundle: documented way to store and load the trained model + feature config.
-- [ ] `requirements.lock` and a reproducible build path.
-- [ ] Containerize the app (Dockerfile) and provide `docker-compose.yml`.
-- [ ] CI/CD pipeline that builds, tests, and produces a tagged artifact.
+- [x] Model + code versioning: tag releases; pin data and model versions. (Tag convention `stageN-vX.Y.Z` documented in README Operational notes, local tag only, not pushed; model identity = sklearn-default HistGradientBoostingRegressor with `scikit-learn==1.9.0` from the lock + parameter-free persistence; data identity = committed fixtures with generator seeds, sha256 recorded in bundle manifests.)
+- [x] Artifact bundle: documented way to store and load the trained model + feature config. (`src/stock_prediction/bundle.py` + CLI: `model.joblib` + `manifest.json` with package/git/sklearn versions, feature config (lags/rolling windows/min_train_rows), and fixture sha256; `artifacts/` gitignored; offline roundtrip tests in `tests/test_bundle.py`; rebuild path documented in README.)
+- [x] `requirements.lock` and a reproducible build path. (`requirements-lock.txt` remains the only lockfile; `make setup && make test` stays the offline path; Docker installs only from the lock.)
+- [x] Containerize the app (Dockerfile) and provide `docker-compose.yml`. (`python:3.12-slim`, installs from `requirements-lock.txt` + package; compose runs offline CLI + bundle smokes on committed fixtures, no yfinance/network/API keys; local run only, no registry push.)
+- [x] CI/CD pipeline that builds, tests, and produces a tagged artifact. (tests+lint job first, then a docker build job as build proof tagging `stock-prediction:ci` locally; no registry push; `make test` runs no docker and no eval.)
 
 **Acceptance:** A tagged release can be rebuilt and run reproducibly.
+
+**Stage 3 note:** Python floor moved 3.11 -> 3.12. `numpy==2.5.3` in
+`requirements-lock.txt` requires Python `>=3.12`; `pip install` of the lock on
+`python:3.11-slim` fails (verified via `docker build --build-arg
+PYTHON_VERSION=3.11 .`, which errors with "No matching distribution found for
+numpy==2.5.3"). `pyproject.toml` requires-python, the Dockerfile base, the CI
+`python-version`, and the README now say 3.12; the lockfile itself is unchanged
+(the same lock installs fine on 3.12).
 
 ## Stage 4 - Deploy
 
