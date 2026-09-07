@@ -55,12 +55,20 @@ numpy==2.5.3"). `pyproject.toml` requires-python, the Dockerfile base, the CI
 
 ## Stage 4 - Deploy
 
-- [ ] FastAPI serving layer with health check and a documented API.
-- [ ] Deploy target decision: local Docker Compose (minimum) or a public endpoint (optional).
-- [ ] Environment-based configuration (no hardcoded secrets).
-- [ ] Document the deployment runbook.
+- [x] FastAPI serving layer with health check and a documented API. (`src/stock_prediction/app.py`: GET /health + POST /forecast around the unchanged Stage 1 harness and Stage 2 metrics; POST /forecast returns per-model n_forecasts, rmse/mae/directional_accuracy/edge, and only the last-k forecasts, never all 219; schemas + status codes documented in README and served at /docs; offline tests in tests/test_app.py run the real harness via TestClient, no mocks.)
+- [x] Deploy target decision: local Docker Compose (minimum) or a public endpoint (optional). (Local compose accepted as the minimum; public cloud/ngrok/Azure/AWS DECLINED - cost + portfolio-not-prod. No TLS, no auth, no multi-user serving, no registry push.)
+- [x] Environment-based configuration (no hardcoded secrets). (Two optional env vars: STOCK_PREDICTION_FIXTURE_DIR (fixture directory; compose sets /app/tests/fixtures) and ALLOW_LIVE_DATA (unset by default -> live yfinance path disabled in containers); both documented in README; default paths are offline on committed fixtures.)
+- [x] Document the deployment runbook. (README Operational notes: clone -> optional make setup && make test -> docker compose build/up api -> curl /health -> curl /forecast -> compose down, with Windows Git Bash notes; verified end-to-end on this branch with recorded HTTP 200/400/403 responses.)
 
 **Acceptance:** The app runs from the container and responds to health + forecast endpoints.
+
+**Stage 4 note:** Verified locally on Docker 29.7.2: `docker compose up -d api`,
+`curl /health` -> `{"status": "ok"}` (HTTP 200), `curl -X POST /forecast` ->
+HTTP 200 with both models (39 origins at `max_rows: 120`, 219 at the default
+full fixture), unknown fixture -> HTTP 400, `source: "live"` without
+`ALLOW_LIVE_DATA=1` -> HTTP 403, then `docker compose down`. Image
+`stock-prediction:local` 833MB (python:3.12-slim + the sklearn lock + fastapi/
+uvicorn; no torch-class dependencies).
 
 ## Stage 5 - Monitor (the differentiator)
 

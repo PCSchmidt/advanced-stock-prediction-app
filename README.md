@@ -200,18 +200,106 @@ evaluation with `make eval`. Note the distinction: a bundle holds the final
 model fit once on all usable history, while walk-forward (evaluation) refits
 per origin; `make eval` reproduces the recorded Stage 2 numbers either way.
 
+### HTTP API (Stage 4)
+
+`src/stock_prediction/app.py` is a small FastAPI + uvicorn service around the
+unchanged Stage 1 walk-forward harness and Stage 2 metrics. The same
+persistence and HistGradientBoosting models run through the same expanding-
+origin loop the CLI uses -- the API adds no models and no tuning.
+
+Endpoints (interactive schema docs at `/docs`):
+
+- `GET /health` -> `{"status": "ok"}` (liveness only; no model work).
+- `POST /forecast` -> runs the real walk-forward harness and returns, per
+  model: `n_forecasts`, Stage 2 metrics (rmse, mae, directional_accuracy,
+  edge), first/last origin, the final forecast, and the last `k` forecasts
+  (`last_k`, default 5). The response is a summary -- it never returns all
+  219 full-fixture forecasts.
+
+Request body (all fields optional): `fixture` (name of a committed fixture,
+default `sample_daily`), `model` (`persistence` | `hist_gradient_boosting` |
+`both`, default `both`), `max_rows` (run on only the last N rows of the
+fixture for a bounded, faster harness run; the models are unchanged),
+`last_k` (1-50, default 5), `source` (`fixture` default | `live`),
+`symbol` (required iff `source: "live"`).
+
+Status codes: `200` success; `400` unknown fixture name, missing `symbol`
+with `source: "live"`, or a harness error (not enough usable rows); `403`
+`source: "live"` requested while the server was not started with
+`ALLOW_LIVE_DATA=1`; `422` schema violations (wrong types, unknown `model`
+value, `max_rows` below the walk-forward warm-up minimum); `500` unexpected
+server-side failure (e.g. misconfigured fixture directory).
+
+The default path is fully offline: committed fixtures, no network, no keys.
+The live yfinance option is double-gated -- the request must ask for
+`"source": "live"` AND the server must be started with `ALLOW_LIVE_DATA=1`.
+
+Environment variables (all optional, no secrets; defaults keep everything
+offline):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `STOCK_PREDICTION_FIXTURE_DIR` | `<repo>/tests/fixtures` (source layout) | Directory holding the committed fixture CSVs. docker-compose sets it to `/app/tests/fixtures` because the package is installed into site-packages in the image. |
+| `ALLOW_LIVE_DATA` | unset (live disabled) | Set to `1` to allow `POST /forecast` with `source: "live"` (yfinance fetch; network required). Unset in the container, so the compose service is fixture-only. |
+
+### Deploy target decision
+
+Local Docker Compose is the deploy target: it is the reproducible minimum and
+matches the portfolio goal (a reviewer can run it), while a public endpoint
+(ngrok, Azure, AWS, or any paid hosting) was **declined** -- recurring cost and
+operational surface for zero portfolio value, and this app is explicitly not
+production. There is no TLS, no authentication, and no multi-user serving
+anywhere in this repository, and none is claimed.
+
+### Deployment runbook (local Docker Compose, verified end-to-end)
+
+Prerequisites: Docker Desktop running, `git`, (optional) `make` + Python 3.12+
+for the host-side test suite.
+
+```
+git clone <repo-url>
+cd advanced_stock_prediction_app
+# optional host-side check (offline, docker-free):
+make setup && make test
+
+docker compose build api
+docker compose up -d api
+curl -s --noproxy "*" http://127.0.0.1:8000/health
+curl -s --noproxy "*" -X POST http://127.0.0.1:8000/forecast \
+  -H "Content-Type: application/json" \
+  -d "{"model": "both", "max_rows": 120, "last_k": 3}"
+docker compose down
+```
+
+Verified on this branch (2026-09-07, Docker 29.7.2, image
+`stock-prediction:local`, 833MB): `/health` returned `{"status": "ok"}`
+(HTTP 200); `/forecast` with the body above returned HTTP 200 with both
+models at 39 walk-forward origins over the last 120 fixture rows; the
+default body (`{}`) returned both models at the full 219 origins; an unknown
+fixture name returned HTTP 400; `source: "live"` in the container returned
+HTTP 403 (env gate off); `docker compose down` stopped and removed the
+container cleanly.
+
+Windows Git Bash notes: `curl` ships with Git Bash. Use `--noproxy "*"` if a
+proxy env var would otherwise intercept localhost; single-quote the JSON body
+(`-d '{"model": "both"}'`) since Git Bash handles single quotes cleanly (the
+double-quoted `\"` form above is the portable equivalent); use forward
+slashes in paths (`cd c:/Dev/...`).
+
 ### Docker / docker-compose (local only)
 
 ```
 docker build -t stock-prediction:local .
-docker compose up --abort-on-container-exit   # or: docker compose run --rm forecast-smoke
+docker compose up -d api                      # Stage 4 HTTP service (fixture-only)
+docker compose up --abort-on-container-exit   # Stage 3 offline smokes
 docker compose down
 ```
 
-`docker compose up` runs two OFFLINE smokes in the image, both on committed
-fixtures: the walk-forward CLI (`forecast-smoke`) and a bundle save/load
-roundtrip (`bundle-smoke`). The lazy yfinance fetch path is never imported, so
-no network and no API keys are involved. The image is `python:3.12-slim` and
-installs only from `requirements-lock.txt` plus the package. Compose is a
-local-run convenience only at this stage: there are no serving endpoints yet
-(Stage 4), and no image is pushed to any registry.
+The image is `python:3.12-slim` and installs only from
+`requirements-lock.txt` plus the package. All three compose services stay
+offline on committed fixtures: the walk-forward CLI (`forecast-smoke`), a
+bundle save/load roundtrip (`bundle-smoke`), and the FastAPI service (`api`,
+published on `127.0.0.1:8000`). The lazy yfinance fetch path is never
+imported in the default compose configuration and no API keys are involved.
+`ALLOW_LIVE_DATA` is intentionally unset in the container: the compose service
+serves fixtures only. Nothing is pushed to any registry.

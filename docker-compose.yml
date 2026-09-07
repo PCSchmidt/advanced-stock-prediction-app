@@ -1,7 +1,19 @@
-# Local run only (Stage 3): build the image and run an OFFLINE smoke.
-# Both services use committed fixtures; the lazy yfinance fetch path is never
-# imported, so no network access and no API keys are involved.
+# Local run only (Stages 3-4): build the image and run an OFFLINE smoke plus
+# the Stage 4 HTTP service. All services use committed fixtures; the lazy
+# yfinance fetch path is never imported, so no network access and no API keys
+# are involved. Nothing is pushed to a registry and nothing is exposed publicly.
 services:
+  # Stage 4 HTTP service: FastAPI + uvicorn, offline on committed fixtures.
+  # No ALLOW_LIVE_DATA set -> live yfinance path is disabled in the container.
+  api:
+    build: .
+    image: stock-prediction:local
+    command: ["uvicorn", "stock_prediction.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    environment:
+      STOCK_PREDICTION_FIXTURE_DIR: /app/tests/fixtures
+
   forecast-smoke:
     build: .
     image: stock-prediction:local
