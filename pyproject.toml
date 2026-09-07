@@ -1,0 +1,18 @@
+[project]
+name = "stock_prediction"
+version = "0.1.0"
+description = "Time-series stock forecasting with drift monitoring and retraining (portfolio app, Stage 0 scaffold)."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["legacy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

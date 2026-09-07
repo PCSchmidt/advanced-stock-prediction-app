@@ -8,12 +8,12 @@ A reviewer can clone this repo, run one command, and see a forecasting app with 
 
 ## Stage 0 - Foundation (prereq)
 
-- [ ] Inspect existing code and inventory what works vs. what is broken.
-- [ ] Decide stack (see AGENTS.md defaults) and document the choice. A redesign from JS to Python is acceptable if justified.
-- [ ] Set up Python 3.11+ environment with pinned dependencies and a lockfile.
-- [ ] Add `.gitignore` for secrets, artifacts, and data caches.
-- [ ] Establish a test harness and CI (GitHub Actions) that runs tests + lint.
-- [ ] Write the README skeleton with the Motivation / Method / Results / Limitations / Operational notes structure.
+- [x] Inspect existing code and inventory what works vs. what is broken. (See INVENTORY.md.)
+- [x] Decide stack (see AGENTS.md defaults) and document the choice. A redesign from JS to Python is acceptable if justified. (Python 3.11+ per AGENTS.md defaults; rationale in INVENTORY.md.)
+- [x] Set up Python 3.11+ environment with pinned dependencies and a lockfile.
+- [x] Add `.gitignore` for secrets, artifacts, and data caches.
+- [x] Establish a test harness and CI (GitHub Actions) that runs tests + lint.
+- [x] Write the README skeleton with the Motivation / Method / Results / Limitations / Operational notes structure.
 
 **Acceptance:** `git clone && make setup && make test` succeeds on a clean machine.
 
