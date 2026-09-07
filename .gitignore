@@ -13,6 +13,9 @@ build/
 # Secrets / env
 .env
 
+# Saved model bundles (see stock_prediction.bundle)
+artifacts/
+
 # Downloaded price caches (live-fetch layer); fixtures under tests/ are committed
 data/cache/
 
