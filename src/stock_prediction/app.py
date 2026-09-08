@@ -29,6 +29,13 @@ Stage 5 monitoring (additive; nothing about /health or /forecast changed):
 - GET /metrics returns in-process JSON counters: request count, latency
   p50/p95/p99, error rate, and the last drift signal. Per-process memory
   only; no Prometheus/Grafana, no persistence, no alerting.
+- GET /metrics/prometheus (Phase 2) returns the same request stream as
+  Prometheus text exposition: stock_prediction_requests_total,
+  stock_prediction_errors_total, stock_prediction_request_latency_seconds,
+  and stock_prediction_up, hand-rolled in prom.py (stdlib-only). Labels are
+  low cardinality by contract: route templates, HTTP verbs, status codes, and
+  the bounded error classes (http_400 etc.). Still per-process memory; the
+  JSON /metrics response is unchanged.
 - Every request logs ONE structured JSON line to stdout (obs.py): request
   id, method, endpoint, status, latency in ms, error class, and the drift
   signal when a drift path ran. No secrets exist here and none are logged.
@@ -52,12 +59,13 @@ import uuid
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from .drift import MIN_WINDOW_ROWS, DriftReport, compare_windows, detect_drift
 from .metrics import MetricReport, compute_result_metrics
 from .obs import RequestMetrics, log_event, now_ms
+from .prom import PROM_CONTENT_TYPE, UNMATCHED_ENDPOINT, PrometheusMetrics
 from .walkforward import Forecast, run_all_models
 
 # Committed offline fixtures shipped with the repo. Names only -- the API never
@@ -77,10 +85,20 @@ app = FastAPI(
 # request. Resets on restart; aggregates nothing across processes.
 metrics = RequestMetrics()
 
+# Phase 2 observability contract: stdlib-only Prometheus exposition state
+# (generic HTTP families only; no app-domain metrics in this phase).
+prom_metrics = PrometheusMetrics()
+
 
 @app.middleware("http")
 async def observe_requests(request: Request, call_next):
-    """Log one structured line per request and feed the /metrics counters."""
+    """Log one structured line per request and feed the /metrics counters.
+
+    Phase 2: also feeds the Prometheus exposition store (prom.py). The
+    ``endpoint`` used everywhere below is the matched ROUTE TEMPLATE (e.g.
+    "/forecast") -- never a full URL or user content -- so the Prometheus
+    labels stay low cardinality. Unmatched paths collapse to "unmatched".
+    """
     request_id = uuid.uuid4().hex[:12]
     started = now_ms()
     response = None
@@ -91,13 +109,24 @@ async def observe_requests(request: Request, call_next):
         status = response.status_code if response is not None else 500
         error_class = f"http_{status}" if status >= 400 else None
         latency_ms = now_ms() - started
+        # Route template from the matched route (scope["route"].path); there
+        # are no path parameters in this app, so this equals the request path
+        # for matched routes and stays bounded for unmatched ones.
+        endpoint = getattr(request.scope.get("route"), "path", UNMATCHED_ENDPOINT)
         metrics.record(status=status, latency_ms=latency_ms)
+        prom_metrics.record(
+            endpoint=endpoint,
+            method=request.method,
+            status=status,
+            latency_s=latency_ms / 1000.0,
+            error_class=error_class,
+        )
         drift_signal = getattr(request.state, "drift_fired", None)
         log_event(
             "http_request",
             request_id=request_id,
             method=request.method,
-            endpoint=request.url.path,
+            endpoint=endpoint,
             status=status,
             latency_ms=round(latency_ms, 3),
             error_class=error_class,
@@ -355,6 +384,24 @@ def drift_endpoint(
     request.state.drift_fired = report.fired
     metrics.set_drift(report.as_dict())
     return report.as_dict()
+
+
+@app.get(
+    "/metrics/prometheus",
+    response_class=Response,
+    responses={200: {"content": {"text/plain; version=0.0.4; charset=utf-8": {}}}},
+)
+def prometheus_metrics_endpoint() -> Response:
+    """Phase 2 observability contract: Prometheus text exposition of the four
+    generic HTTP serving families (requests_total, errors_total,
+    request_latency_seconds, up). Stdlib-only writer (prom.py); low-cardinality
+    labels only (route templates, verbs, status codes, bounded error classes).
+    Per-process memory like the JSON /metrics counters. The JSON GET /metrics
+    response above is unchanged and stays the human-facing view."""
+    return Response(
+        content=prom_metrics.render(),
+        media_type=PROM_CONTENT_TYPE,
+    )
 
 
 @app.get("/metrics")

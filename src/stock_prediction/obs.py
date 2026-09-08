@@ -11,8 +11,10 @@ CLI (``cli.py``):
 - **Metrics.** ``RequestMetrics`` is an in-process counter store (request
   count, error count, bounded latency sample, last drift signal). It is
   per-process memory -- it resets on restart and aggregates nothing across
-  replicas. ``GET /metrics`` in ``app.py`` renders its snapshot as JSON;
-  there is deliberately no Prometheus/Grafana stack behind it.
+  replicas. ``GET /metrics`` in ``app.py`` renders its snapshot as JSON.
+  Phase 2 adds ``prom.py``: a stdlib-only Prometheus text writer for the four
+  generic HTTP families, served at ``GET /metrics/prometheus`` -- still
+  per-process memory, still no Prometheus/Grafana stack behind it.
 
 uvicorn's own access/error logging is untouched; these JSON lines are
 additional, one per request handled by this app's middleware.

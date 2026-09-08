@@ -166,9 +166,10 @@ This is not production monitoring: there is no alerting, no scheduler, no
   background process, no automated loop, and no alerting anywhere in this
   repository. Thresholds were recorded on synthetic walks; live-market
   behavior of the thresholds is untested.
-- `GET /metrics` counters are per-process memory: they reset on restart and
-  aggregate nothing across processes. There is no Prometheus/Grafana stack
-  and no persistent metrics store.
+- `GET /metrics` and `GET /metrics/prometheus` counters are per-process
+  memory: they reset on restart and aggregate nothing across processes. There
+  is a Prometheus TEXT endpoint (stdlib-only writer), but no Prometheus
+  server, no Grafana, no scrape persistence, and no alerting anywhere.
 - All Stage 2 evaluation runs on committed synthetic series (random-walk-style
   fixtures), not real market data. Performance on synthetic walks is not
   market skill and demonstrates nothing about trading ability. Real data
@@ -317,8 +318,21 @@ unchanged (the `/forecast` response gained one `drift` field).
 - `GET /metrics`: JSON with `request_count`, `error_count`, `error_rate`,
   `latency_ms` (count/mean/p50/p95/p99), and `last_drift` (the most recent
   detector result served by this process). In-process memory only: resets on
-  restart, aggregates nothing across processes. JSON, not Prometheus text
-  format -- no Prometheus/Grafana stack exists in this repository.
+  restart, aggregates nothing across processes. This JSON response is
+  unchanged by the Phase 2 Prometheus endpoint below.
+- `GET /metrics/prometheus`: the same request stream as Prometheus text
+  exposition (media type `text/plain; version=0.0.4; charset=utf-8`), written
+  by hand in `src/stock_prediction/prom.py` -- stdlib-only, no
+  prometheus_client, no lockfile change. Four generic families:
+  `stock_prediction_requests_total` (counter; endpoint, method, status),
+  `stock_prediction_errors_total` (counter; endpoint, method, error_class),
+  `stock_prediction_request_latency_seconds` (histogram; endpoint, method;
+  buckets 0.005/0.01/0.025/0.05/0.1/0.25/0.5/1/2.5/5 s), and
+  `stock_prediction_up` (gauge, 1). Labels are low cardinality by design:
+  route templates (`/forecast`, not full URLs), HTTP verbs, status codes, the
+  bounded error classes (`http_400` ...), and `unmatched` for 404s. Still
+  per-process memory; no Prometheus/Grafana stack, no alerting, no scrape
+  persistence exists in this repository.
 - Structured logs: one JSON line per request on stdout (`request_id`,
   `method`, `endpoint`, `status`, `latency_ms`, `error_class` such as
   `http_400`, and `drift_signal` when a forecast/drift path ran). There are
