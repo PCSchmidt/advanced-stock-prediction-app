@@ -47,7 +47,7 @@ Stage 1 (forecasting core) is implemented:
   `last_close * exp(pred_return)`. Chosen because it is fast, deterministic for
   fixed data, captures simple nonlinear interactions among the lag/rolling
   features, and stays in boring, well-supported tooling. No deep learning, no
-  fit-on-all-history-then-forecast-30-days (the legacy anti-pattern): this is
+  fit-on-all-history-then-forecast-30-days (the original app's anti-pattern): this is
   strict one-step-ahead forecasting.
 
 - **Walk-forward validation.** Expanding-origin walk-forward: at each origin

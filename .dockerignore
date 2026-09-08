@@ -17,7 +17,6 @@ dist/
 build/
 
 # Reference material and host tooling, not needed in the image
-legacy/
 .github/
 .idea/
 .vscode/

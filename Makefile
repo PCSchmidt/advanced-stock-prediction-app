@@ -37,5 +37,5 @@ lint:
 
 clean:
 	rm -rf .venv .pytest_cache .ruff_cache dist build src/*.egg-info
-	find . -name __pycache__ -type d -not -path "./legacy/*" -exec rm -rf {} +
-	find . -name "*.pyc" -not -path "./legacy/*" -delete
+	find . -name __pycache__ -type d -exec rm -rf {} +
+	find . -name "*.pyc" -delete

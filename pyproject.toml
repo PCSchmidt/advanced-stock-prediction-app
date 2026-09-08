@@ -26,7 +26,6 @@ dev = ["pytest>=8", "ruff>=0.6", "httpx>=0.27"]  # httpx: fastapi TestClient bac
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["legacy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
