@@ -50,6 +50,11 @@ LOG_FIELDS = (
     "fixture",
     "model",
     "n_forecasts",
+    # Phase 3: one startup line reports what the eval-gauge loader loaded.
+    "eval_fixture",
+    "eval_window",
+    "eval_rows_loaded",
+    "sklearn_version",
 )
 
 _configured = False

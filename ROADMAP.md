@@ -76,7 +76,8 @@ uvicorn; no torch-class dependencies).
 - [x] Structured logging of requests, forecast latency, and errors. (`src/stock_prediction/obs.py`: one JSON line per request on stdout via app middleware -- request_id, method, endpoint, status, latency_ms, error_class (e.g. http_400), drift_signal; fixed field allowlist, no secrets (none exist); shared by uvicorn serving and the CLI (`python -m stock_prediction.cli --json-logs`).)
 - [x] Metrics endpoint exposing: request count, latency percentiles, error rate, drift signal. (`GET /metrics`: JSON with request_count, error_count, error_rate, latency_ms p50/p95/p99, and last_drift; in-process counters only -- reset on restart, no persistence, no cross-replica aggregation.)
 - [x] Phase 2 observability contract: stdlib-only Prometheus text endpoint. (`GET /metrics/prometheus` in app.py + hand-rolled writer `src/stock_prediction/prom.py` -- no prometheus_client, no new deps, no lockfile change. Generic families only: stock_prediction_requests_total (endpoint, method, status), stock_prediction_errors_total (endpoint, method, error_class), stock_prediction_request_latency_seconds (histogram, buckets 0.005..5 s), stock_prediction_up. Low-cardinality labels: route templates, verbs, status codes, bounded error classes, "unmatched" for 404s. JSON GET /metrics response unchanged. Offline deterministic tests in tests/test_prometheus.py, including a bounded-label audit.)
-- [ ] Optional: Prometheus/Grafana dashboard. (Left unchecked deliberately: no extra containers, no Grafana dashboard, no scrape persistence. The Phase 2 Prometheus text endpoint exists; no Prometheus server or alerting runs against it.)
+- [x] Phase 3 app-domain Prometheus families on the same stdlib-only endpoint. (`GET /metrics/prometheus` + prom.py, no new deps, no lockfile change: stock_prediction_forecast_requests_total (counter; model x status -- separate family, documented, because 422s never reach the forecast handler), stock_prediction_forecast_latency_seconds (histogram; requested model), stock_prediction_drift_checks_total (outcome=fired|quiet) + stock_prediction_drift_state (gauge 0/1, mirrors JSON last_drift; skipped checks not counted), stock_prediction_eval_rmse/_mae/_directional_accuracy/_edge (EVALUATION-CONTEXT gauges loaded at startup from committed experiments/results.csv -- exactly one context: fixture=sample_daily, window=full, n=219 origins, documented in HELP text, never as labels; loader ignores all other rows), stock_prediction_model_info (model, sklearn_version). Labels only from bounded vocabularies; offline tests in tests/test_prometheus.py incl. bounded-label audit, skipped-check behavior, and exact eval values vs the CSV.)
+- [ ] Optional: Prometheus/Grafana dashboard. (Left unchecked deliberately: no extra containers, no Grafana dashboard, no scrape persistence. The Phase 2+3 Prometheus text endpoint exists; no Prometheus server or alerting runs against it.)
 - [x] Document "what could degrade" (regime change, data source changes, feature drift). (README Operational notes "What could degrade, and the signal above" ties each failure mode to the drift signal; Limitations state detection is on synthetic fixtures only, no alerting, no live-data validation.)
 
 **Acceptance:** A reviewer can see how drift is detected and what signals would trigger a retrain.
@@ -85,9 +86,11 @@ uvicorn; no torch-class dependencies).
 log-return distribution between two windows; the documented retrain signal is
 PSI >= 0.25 or KS p <= 0.01 on freshly observed data. Threshold rationale and
 the 10-bin noise finding are in drift.py and README Monitor; recorded fixture
-numbers are in `experiments/drift_log.md`. The optional Prometheus/Grafana box
-stays unchecked (no new containers; GET /metrics is JSON only). Verified
-end-to-end on this branch with docker compose (see README runbook note).
+numbers are in `experiments/drift_log.md`. Phase 2+3 expose the serving and
+app-domain families as Prometheus text (see the Phase 3 checklist entry); the
+optional Prometheus/Grafana box stays unchecked (no new containers; GET
+/metrics is JSON only). Verified end-to-end on this branch with docker compose
+(see README runbook note).
 
 ## Stage 6 - Maintain
 

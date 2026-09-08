@@ -20,4 +20,10 @@ RUN pip install --no-cache-dir --no-deps .
 # and never imports the lazy yfinance fetch path, so no network is needed.
 COPY tests/fixtures ./tests/fixtures
 
+# Phase 3: committed Stage 2 evaluation artifact for the EVALUATION-CONTEXT
+# Prometheus gauges (stock_prediction_eval_*). The api compose service points
+# STOCK_PREDICTION_EVAL_RESULTS at this path; without it the gauges would
+# stay absent (documented, non-fatal).
+COPY experiments/results.csv ./experiments/results.csv
+
 CMD ["python", "-m", "stock_prediction.cli", "--fixture", "tests/fixtures/sample_daily.csv", "--model", "both"]

@@ -29,13 +29,21 @@ Stage 5 monitoring (additive; nothing about /health or /forecast changed):
 - GET /metrics returns in-process JSON counters: request count, latency
   p50/p95/p99, error rate, and the last drift signal. Per-process memory
   only; no Prometheus/Grafana, no persistence, no alerting.
-- GET /metrics/prometheus (Phase 2) returns the same request stream as
-  Prometheus text exposition: stock_prediction_requests_total,
+- GET /metrics/prometheus (Phase 2 + Phase 3) returns Prometheus text
+  exposition, hand-rolled in prom.py (stdlib-only, no prometheus_client). The
+  generic HTTP families: stock_prediction_requests_total,
   stock_prediction_errors_total, stock_prediction_request_latency_seconds,
-  and stock_prediction_up, hand-rolled in prom.py (stdlib-only). Labels are
-  low cardinality by contract: route templates, HTTP verbs, status codes, and
-  the bounded error classes (http_400 etc.). Still per-process memory; the
-  JSON /metrics response is unchanged.
+  stock_prediction_up. Phase 3 app-domain families:
+  stock_prediction_forecast_requests_total / _forecast_latency_seconds
+  (bounded model vocabulary), stock_prediction_drift_checks_total and
+  stock_prediction_drift_state (mirroring the last_drift JSON semantics),
+  stock_prediction_eval_rmse/_mae/_directional_accuracy/_edge
+  (EVALUATION-CONTEXT gauges loaded once at startup from the committed
+  experiments/results.csv; fixture/window/row counts documented in HELP text,
+  never as labels), and stock_prediction_model_info. Labels are low
+  cardinality by contract: route templates, HTTP verbs, status codes, bounded
+  error classes, the bounded model vocabulary, and drift outcomes. Still
+  per-process memory; the JSON /metrics response is unchanged.
 - Every request logs ONE structured JSON line to stdout (obs.py): request
   id, method, endpoint, status, latency in ms, error class, and the drift
   signal when a drift path ran. No secrets exist here and none are logged.
@@ -65,7 +73,13 @@ from pydantic import BaseModel, Field
 from .drift import MIN_WINDOW_ROWS, DriftReport, compare_windows, detect_drift
 from .metrics import MetricReport, compute_result_metrics
 from .obs import RequestMetrics, log_event, now_ms
-from .prom import PROM_CONTENT_TYPE, UNMATCHED_ENDPOINT, PrometheusMetrics
+from .prom import (
+    EVAL_FIXTURE,
+    EVAL_WINDOW,
+    PROM_CONTENT_TYPE,
+    UNMATCHED_ENDPOINT,
+    PrometheusMetrics,
+)
 from .walkforward import Forecast, run_all_models
 
 # Committed offline fixtures shipped with the repo. Names only -- the API never
@@ -85,9 +99,55 @@ app = FastAPI(
 # request. Resets on restart; aggregates nothing across processes.
 metrics = RequestMetrics()
 
-# Phase 2 observability contract: stdlib-only Prometheus exposition state
-# (generic HTTP families only; no app-domain metrics in this phase).
+# Phase 2 observability contract: stdlib-only Prometheus exposition state.
+# Phase 3 adds the app-domain families (forecast, drift, eval gauges,
+# model_info) on the same writer.
 prom_metrics = PrometheusMetrics()
+
+
+def _eval_results_path() -> Path:
+    """Path of the committed Stage 2 evaluation CSV (experiments/results.csv).
+
+    Resolution order mirrors the fixture directory: STOCK_PREDICTION_EVAL_RESULTS
+    env var first (docker-compose sets it), then the source-checkout layout
+    relative to this file. In a site-packages install with no env var the
+    default path does not exist and the eval gauges stay absent (documented).
+    """
+    env = os.environ.get("STOCK_PREDICTION_EVAL_RESULTS")
+    if env:
+        return Path(env)
+    return Path(__file__).resolve().parents[2] / "experiments" / "results.csv"
+
+
+def _load_static_prom_metrics() -> None:
+    """Load startup-time Prometheus series that do not depend on requests.
+
+    - ``model_info``: the bounded model names and the running sklearn version.
+    - ``eval_*`` gauges: from the committed Stage 2 artifacts. A missing CSV
+      is not an error -- the gauges simply stay absent (documented honestly).
+
+    Idempotent (values overwrite), so tests call it again after
+    ``prom_metrics.reset()``.
+    """
+    try:
+        import sklearn
+
+        sklearn_version = str(sklearn.__version__)
+    except ImportError:  # pragma: no cover - sklearn is a hard dependency
+        sklearn_version = "unknown"
+    for model_name in ("persistence", "hist_gradient_boosting"):
+        prom_metrics.set_model_info(model=model_name, sklearn_version=sklearn_version)
+    loaded = prom_metrics.load_eval_gauges_from_csv(_eval_results_path())
+    log_event(
+        "prom_static_metrics_loaded",
+        eval_fixture=EVAL_FIXTURE,
+        eval_window=EVAL_WINDOW,
+        eval_rows_loaded=loaded,
+        sklearn_version=sklearn_version,
+    )
+
+
+_load_static_prom_metrics()
 
 
 @app.middleware("http")
@@ -242,7 +302,11 @@ def _drift_for_closes(closes, label: str) -> dict[str, object]:
             ),
         }
     report = detect_drift(closes, label=label)
-    return report.as_dict()
+    report_dict = report.as_dict()
+    # Phase 3: count only COMPLETED checks (skipped checks above record
+    # nothing); the state gauge mirrors the JSON last_drift semantics.
+    prom_metrics.record_drift(fired=bool(report_dict.get("fired")))
+    return report_dict
 
 
 def _point(f: Forecast) -> ForecastPoint:
@@ -280,25 +344,36 @@ def health() -> dict[str, str]:
 def forecast(req: ForecastRequest, request: Request) -> ForecastResponse:
     """Run the real walk-forward harness on a committed fixture (or live data,
     if double-gated on) and return per-model summary stats, the last-k
-    forecasts, and the Stage 5 drift signal for the same closes."""
+    forecasts, and the Stage 5 drift signal for the same closes.
+
+    Phase 3: every exit path records into stock_prediction_forecast_requests_
+    total (bounded model + HTTP status); completed runs also record handler
+    latency into stock_prediction_forecast_latency_seconds under the
+    REQUESTED model label ("both" covers the two-model pass).
+    """
+    t0 = now_ms()
     if req.source == "live":
         if os.environ.get("ALLOW_LIVE_DATA") != "1":
+            prom_metrics.record_forecast(model=req.model, status=403)
             raise HTTPException(
                 status_code=403,
                 detail="live data is disabled on this server; set ALLOW_LIVE_DATA=1 "
                 "to enable it (fixtures remain available offline)",
             )
         if not req.symbol:
+            prom_metrics.record_forecast(model=req.model, status=400)
             raise HTTPException(status_code=400, detail="symbol is required when source='live'")
         from .data import fetch_prices  # lazy: keeps the offline path network-free
 
         try:
             closes = fetch_prices(req.symbol)
         except Exception as exc:
+            prom_metrics.record_forecast(model=req.model, status=400)
             raise HTTPException(status_code=400, detail=f"live fetch failed: {exc}") from exc
         source_label = f"live:{req.symbol}"
     else:
         if req.fixture not in KNOWN_FIXTURES:
+            prom_metrics.record_forecast(model=req.model, status=400)
             raise HTTPException(
                 status_code=400,
                 detail=f"unknown fixture {req.fixture!r}; known fixtures: "
@@ -310,6 +385,7 @@ def forecast(req: ForecastRequest, request: Request) -> ForecastResponse:
         try:
             closes = load_csv(path)
         except FileNotFoundError as exc:
+            prom_metrics.record_forecast(model=req.model, status=500)
             raise HTTPException(
                 status_code=500,
                 detail=f"fixture file {path} not found on this server; check "
@@ -323,6 +399,7 @@ def forecast(req: ForecastRequest, request: Request) -> ForecastResponse:
     try:
         results = run_all_models(closes, which=req.model)
     except ValueError as exc:
+        prom_metrics.record_forecast(model=req.model, status=400)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Stage 5 (additive): read-only drift check on the closes just forecast.
@@ -331,6 +408,7 @@ def forecast(req: ForecastRequest, request: Request) -> ForecastResponse:
     if isinstance(drift_report.get("fired"), bool):
         metrics.set_drift(drift_report)
 
+    prom_metrics.record_forecast(model=req.model, status=200, latency_s=(now_ms() - t0) / 1000.0)
     return ForecastResponse(
         source=source_label,
         n_rows=len(closes),
@@ -382,6 +460,7 @@ def drift_endpoint(
     else:
         report = detect_drift(closes, label=fixture)
     request.state.drift_fired = report.fired
+    prom_metrics.record_drift(fired=report.fired)
     metrics.set_drift(report.as_dict())
     return report.as_dict()
 
@@ -392,12 +471,16 @@ def drift_endpoint(
     responses={200: {"content": {"text/plain; version=0.0.4; charset=utf-8": {}}}},
 )
 def prometheus_metrics_endpoint() -> Response:
-    """Phase 2 observability contract: Prometheus text exposition of the four
-    generic HTTP serving families (requests_total, errors_total,
-    request_latency_seconds, up). Stdlib-only writer (prom.py); low-cardinality
-    labels only (route templates, verbs, status codes, bounded error classes).
-    Per-process memory like the JSON /metrics counters. The JSON GET /metrics
-    response above is unchanged and stays the human-facing view."""
+    """Phase 2 + 3 observability contract: Prometheus text exposition.
+
+    Generic HTTP serving families (requests_total, errors_total,
+    request_latency_seconds, up) plus the Phase 3 app-domain families
+    (forecast requests/latency, drift checks/state, EVALUATION-CONTEXT eval
+    gauges, model_info). Stdlib-only writer (prom.py); labels come only from
+    bounded vocabularies (route templates, verbs, status codes, bounded error
+    classes, the bounded model vocabulary, drift outcomes). Per-process
+    memory like the JSON /metrics counters, which are unchanged and stay the
+    human-facing view."""
     return Response(
         content=prom_metrics.render(),
         media_type=PROM_CONTENT_TYPE,

@@ -301,6 +301,7 @@ offline):
 | --- | --- | --- |
 | `STOCK_PREDICTION_FIXTURE_DIR` | `<repo>/tests/fixtures` (source layout) | Directory holding the committed fixture CSVs. docker-compose sets it to `/app/tests/fixtures` because the package is installed into site-packages in the image. |
 | `ALLOW_LIVE_DATA` | unset (live disabled) | Set to `1` to allow `POST /forecast` with `source: "live"` (yfinance fetch; network required). Unset in the container, so the compose service is fixture-only. |
+| `STOCK_PREDICTION_EVAL_RESULTS` | `<repo>/experiments/results.csv` (source layout) | Committed Stage 2 evaluation CSV loaded at startup for the `stock_prediction_eval_*` gauges. If the file is missing the gauges stay absent (non-fatal, documented). docker-compose sets it to `/app/experiments/results.csv`. |
 
 ### Monitoring endpoints and structured logs (Stage 5)
 
@@ -320,19 +321,49 @@ unchanged (the `/forecast` response gained one `drift` field).
   detector result served by this process). In-process memory only: resets on
   restart, aggregates nothing across processes. This JSON response is
   unchanged by the Phase 2 Prometheus endpoint below.
-- `GET /metrics/prometheus`: the same request stream as Prometheus text
-  exposition (media type `text/plain; version=0.0.4; charset=utf-8`), written
-  by hand in `src/stock_prediction/prom.py` -- stdlib-only, no
-  prometheus_client, no lockfile change. Four generic families:
+- `GET /metrics/prometheus`: Prometheus text exposition (media type
+  `text/plain; version=0.0.4; charset=utf-8`), written by hand in
+  `src/stock_prediction/prom.py` -- stdlib-only, no prometheus_client, no
+  lockfile change. Four generic families (Phase 2):
   `stock_prediction_requests_total` (counter; endpoint, method, status),
   `stock_prediction_errors_total` (counter; endpoint, method, error_class),
   `stock_prediction_request_latency_seconds` (histogram; endpoint, method;
   buckets 0.005/0.01/0.025/0.05/0.1/0.25/0.5/1/2.5/5 s), and
-  `stock_prediction_up` (gauge, 1). Labels are low cardinality by design:
-  route templates (`/forecast`, not full URLs), HTTP verbs, status codes, the
-  bounded error classes (`http_400` ...), and `unmatched` for 404s. Still
-  per-process memory; no Prometheus/Grafana stack, no alerting, no scrape
-  persistence exists in this repository.
+  `stock_prediction_up` (gauge, 1). App-domain families (Phase 3, rendered
+  after the generic four):
+
+  - `stock_prediction_forecast_requests_total` (counter; `model` x `status`).
+    Deliberately a separate family rather than a `model` label on
+    `requests_total`: `model` is only known inside the forecast handler, so
+    422 schema rejections (never reaching the handler) are honestly absent
+    here, and the generic family stays app-agnostic. `model` is the API's
+    bounded vocabulary (`persistence`, `hist_gradient_boosting`, `both`;
+    unexpected values clamp to `invalid`); 400s that do reach the handler are
+    recorded with the requested model.
+  - `stock_prediction_forecast_latency_seconds` (histogram; `model`): handler
+    latency per REQUESTED model (`both` is one handler pass, not per-model).
+  - `stock_prediction_drift_checks_total` (counter; `outcome` in
+    {`fired`, `quiet`}) and `stock_prediction_drift_state` (gauge, 0 = last
+    completed check quiet, 1 = fired), mirroring the JSON `last_drift`
+    semantics; skipped checks are not counted.
+  - `stock_prediction_eval_rmse` / `_mae` / `_directional_accuracy` / `_edge`
+    (gauges; `model`). **EVALUATION-CONTEXT metrics**, loaded once at startup
+    from the committed Stage 2 artifacts (`experiments/results.csv`; path
+    overridable via `STOCK_PREDICTION_EVAL_RESULTS`). Exactly one evaluation
+    context is exposed -- fixture `sample_daily`, window `full`, 219
+    walk-forward origins per model, one-step log returns -- and that context
+    is documented in HELP text, NEVER as labels; the loader ignores every
+    other row, so incompatible evaluation windows can never be confusable.
+    These are offline artifact numbers, not live serving metrics.
+    `directional_accuracy` is undefined for persistence (empty cell in the
+    CSV), so that series is absent for that model.
+  - `stock_prediction_model_info` (gauge 1; `model`, `sklearn_version`).
+
+  Labels are low cardinality by design: route templates (`/forecast`, not
+  full URLs), HTTP verbs, status codes, bounded error classes (`http_400`
+  ...), the bounded model vocabulary, drift outcomes, and `unmatched` for
+  404s. Still per-process memory; no Prometheus/Grafana stack, no alerting,
+  no scrape persistence exists in this repository.
 - Structured logs: one JSON line per request on stdout (`request_id`,
   `method`, `endpoint`, `status`, `latency_ms`, `error_class` such as
   `http_400`, and `drift_signal` when a forecast/drift path ran). There are
