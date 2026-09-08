@@ -425,6 +425,13 @@ parallel):
   `{"status": "OK", "message": "Successfully queried the Prometheus API."}`;
   `GET /api/dashboards/uid/stock-forecast-main` -> 200 with all 14 panels.
 
+Phase 7 re-check with the stack left running: `make test` (pytest 88 passed,
+ruff) and `make lint` green; the four endpoint checks above re-run 200/up/OK
+against the live stack. This repository has no `ui/` folder, so there is no
+npm build to run (n/a). Dashboard no-data behavior: stat panels render
+"no data"; time series render Grafana's native "No data" placeholder until
+traffic arrives; eval panels carry static values by design.
+
 Dashboard UID is `stock-forecast-main` ("Stock Prediction API — Overview"):
 app health, request rate, error rate and error classes, p50/p95/p99 latency,
 endpoint breakdown, recent-errors table, forecast request rate and latency by
