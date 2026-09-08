@@ -167,9 +167,12 @@ This is not production monitoring: there is no alerting, no scheduler, no
   repository. Thresholds were recorded on synthetic walks; live-market
   behavior of the thresholds is untested.
 - `GET /metrics` and `GET /metrics/prometheus` counters are per-process
-  memory: they reset on restart and aggregate nothing across processes. There
-  is a Prometheus TEXT endpoint (stdlib-only writer), but no Prometheus
-  server, no Grafana, no scrape persistence, and no alerting anywhere.
+  memory: they reset on restart and aggregate nothing across processes. The
+  Phase 6 Prometheus/Grafana stack is LOCAL docker compose only (verified on
+  this machine): no alerting, no remote storage, no hosted monitoring, no
+  dashboard published anywhere. Prometheus keeps no volume, so its history
+  dies with the container; the eval gauges are static offline artifacts, not
+  live quality measurements.
 - All Stage 2 evaluation runs on committed synthetic series (random-walk-style
   fixtures), not real market data. Performance on synthetic walks is not
   market skill and demonstrates nothing about trading ability. Real data
@@ -362,8 +365,80 @@ unchanged (the `/forecast` response gained one `drift` field).
   Labels are low cardinality by design: route templates (`/forecast`, not
   full URLs), HTTP verbs, status codes, bounded error classes (`http_400`
   ...), the bounded model vocabulary, drift outcomes, and `unmatched` for
-  404s. Still per-process memory; no Prometheus/Grafana stack, no alerting,
-  no scrape persistence exists in this repository.
+  404s. Still per-process memory; scraped by the local Prometheus below, but
+  there is no alerting anywhere in this repository.
+
+### Local observability stack (Phase 6: Prometheus + Grafana)
+
+`docker-compose.yml` ships a fully declarative local stack: Prometheus scrapes
+the API's `/metrics/prometheus` every 5 s, and Grafana auto-provisions the
+Prometheus datasource plus one application dashboard from committed files
+(`observability/prometheus/prometheus.yml`,
+`observability/grafana/provisioning/...`,
+`observability/grafana/dashboards/stock_prediction.json`). No cloud services,
+no external monitoring, no alerting. All host ports are env-overridable
+(`${VAR:-default}`):
+
+| Service | Host port (default) | Override env var |
+| --- | --- | --- |
+| api (FastAPI) | 8000 | `API_HOST_PORT` |
+| prometheus | 9093 | `PROMETHEUS_HOST_PORT` |
+| grafana | 3003 | `GRAFANA_HOST_PORT` (admin/admin defaults via `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD`) |
+
+```
+docker compose up -d --build api prometheus grafana
+# generate traffic (offline fixtures; adjust the api host port if overridden):
+curl -s --noproxy "*" http://127.0.0.1:8000/health
+curl -s --noproxy "*" -X POST http://127.0.0.1:8000/forecast \
+  -H "Content-Type: application/json" -d '{"model": "both", "max_rows": 150, "last_k": 3}'
+curl -s --noproxy "*" "http://127.0.0.1:8000/drift?fixture=vol_regime_shift"
+# verify:
+#   Prometheus target:  http://localhost:9093/api/v1/targets  -> health "up"
+#   Instant query:      http://localhost:9093/api/v1/query?query=stock_prediction_forecast_requests_total
+#   Grafana:            http://localhost:3003 (admin/admin), dashboard "Stock Prediction API — Overview"
+docker compose down   # grafana-data named volume survives; containers/networks removed
+```
+
+Verified end-to-end on this branch (Docker 29.7.2, Compose v5.5.0; the api was
+validated with `API_HOST_PORT=8020` because the default host port 8000 was
+momentarily occupied by a sibling portfolio stack being validated in
+parallel):
+
+- `GET /health` -> 200 `{"status": "ok"}`; 8 health checks + 3 `POST
+  /forecast` (`both`, offline fixtures) + 1 `POST /forecast` (persistence,
+  `vol_regime_shift`) + `GET /drift?fixture=vol_regime_shift` (fired) + `GET
+  /drift` (quiet) + 1 deliberately invalid `POST /forecast` -> 400.
+- Prometheus target `stock_prediction_api` (instance `api:8000`) health `up`,
+  no scrape error.
+- Instant query results (real values, Prometheus `success`):
+  `stock_prediction_forecast_requests_total{model="both",status="200"} = 3`,
+  `{model="both",status="400"} = 1`,
+  `{model="persistence",status="200"} = 1`;
+  `stock_prediction_drift_checks_total{outcome="fired"} = 2`,
+  `{outcome="quiet"} = 4`; `stock_prediction_drift_state = 0` (last check
+  quiet); `stock_prediction_eval_rmse{model="persistence"} = 0.014733`,
+  `{model="hist_gradient_boosting"} = 0.016002` (the committed Stage 2
+  sample_daily/full numbers);
+  `stock_prediction_model_info{model="hist_gradient_boosting",
+  sklearn_version="1.9.0"} = 1` (+ the persistence series); `up = 1`.
+- Grafana `GET /api/datasources/uid/prometheus/health` -> 200
+  `{"status": "OK", "message": "Successfully queried the Prometheus API."}`;
+  `GET /api/dashboards/uid/stock-forecast-main` -> 200 with all 14 panels.
+
+Dashboard UID is `stock-forecast-main` ("Stock Prediction API — Overview"):
+app health, request rate, error rate and error classes, p50/p95/p99 latency,
+endpoint breakdown, recent-errors table, forecast request rate and latency by
+model, drift state, drift-firing events, and the eval RMSE/MAE/edge/directional
+accuracy panels. Every eval panel names the evaluation context in its
+description (fixture `sample_daily`, window `full`, n=219 walk-forward
+origins) and is explicitly labeled as offline evaluation context, not live
+serving data. Panels render "No data" until the API receives traffic.
+
+Persistence, on purpose and documented: the ONLY named volume is
+`grafana-data` (Grafana users/layout survive `compose down`; the directory is
+never committed). Prometheus is deliberately stateless -- local demo metrics
+are regenerated by traffic, so no scrape persistence exists beyond the
+container lifetime.
 - Structured logs: one JSON line per request on stdout (`request_id`,
   `method`, `endpoint`, `status`, `latency_ms`, `error_class` such as
   `http_400`, and `drift_signal` when a forecast/drift path ran). There are
@@ -571,15 +646,18 @@ slashes in paths (`cd c:/Dev/...`).
 ```
 docker build -t stock-prediction:local .
 docker compose up -d api                      # Stage 4 HTTP service (fixture-only)
+docker compose up -d --build api prometheus grafana   # Phase 6 observability stack
 docker compose up --abort-on-container-exit   # Stage 3 offline smokes
-docker compose down
+docker compose down                           # grafana-data volume survives
 ```
 
 The image is `python:3.12-slim` and installs only from
-`requirements-lock.txt` plus the package. All three compose services stay
-offline on committed fixtures: the walk-forward CLI (`forecast-smoke`), a
-bundle save/load roundtrip (`bundle-smoke`), and the FastAPI service (`api`,
-published on `127.0.0.1:8000`). The lazy yfinance fetch path is never
+`requirements-lock.txt` plus the package. All compose services stay offline on
+committed fixtures: the walk-forward CLI (`forecast-smoke`), a bundle
+save/load roundtrip (`bundle-smoke`), the FastAPI service (`api`, published on
+`${API_HOST_PORT:-8000}`), and the Phase 6 observability services (prometheus
+on `${PROMETHEUS_HOST_PORT:-9093}`, grafana on `${GRAFANA_HOST_PORT:-3003}`;
+see "Local observability stack" above). The lazy yfinance fetch path is never
 imported in the default compose configuration and no API keys are involved.
 `ALLOW_LIVE_DATA` is intentionally unset in the container: the compose service
 serves fixtures only. Nothing is pushed to any registry.

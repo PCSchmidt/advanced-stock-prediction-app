@@ -1,0 +1,12 @@
+# Prometheus scrape config for the local docker compose stack (Phase 6).
+# Scrapes the FastAPI service's stdlib Prometheus endpoint. Short retention
+# defaults; this is a local portfolio stack, not a monitoring service.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: stock_prediction_api
+    metrics_path: /metrics/prometheus
+    static_configs:
+      - targets: ["api:8000"]

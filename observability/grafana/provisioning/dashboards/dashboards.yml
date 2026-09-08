@@ -1,0 +1,13 @@
+# Grafana declarative dashboard provisioning (Phase 6).
+apiVersion: 1
+providers:
+  - name: stock_prediction
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: false
+    options:
+      path: /opt/grafana-dashboards
+      foldersFromFilesStructure: false
