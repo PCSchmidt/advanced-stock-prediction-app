@@ -3,6 +3,131 @@
 Time-series stock forecasting with drift monitoring and retraining. This is the
 forecasting + maintain pillar of a personal AI-engineering portfolio.
 
+**Live deployment: deliberately none.** Local Docker Compose is the deploy
+target; a public endpoint was explicitly declined (see
+[Deploy target decision](#deploy-target-decision)). A reviewer runs everything
+from this repo, offline.
+
+## What is this? (plain-language overview)
+
+This app predicts the next day's stock price movement and - the part that
+makes it distinctive - manages the whole life of that model afterwards: it
+detects when the market has drifted away from what the model learned, retrains
+on request, versions every model artifact, and rolls back safely. It is the
+"what happens after you ship a model" story, done honestly and locally.
+
+Two models run through the identical evaluation loop:
+
+- **persistence** - "tomorrow will be like today" (the forecast close equals
+  the last known close). Simple, hard to beat, and the honest bar every
+  fancier model must clear.
+- **HistGradientBoosting** (scikit-learn, defaults, no tuning) - predicts the
+  next daily log return from the last five returns plus rolling mean/volatility
+  features, always computed without peeking at the future.
+
+You can drive it three ways:
+
+1. **The CLI** - fully offline against a committed synthetic fixture, printing
+   walk-forward evaluation metrics for both models.
+2. **The HTTP API** - `POST /forecast` runs the real harness and returns
+   metrics plus the final forecast; every response also carries a `drift`
+   object saying whether the drift detector fired.
+3. **The observability stack** - `docker compose up` runs the API with local
+   Prometheus and Grafana (14-panel dashboard of forecasts, latency, drift and
+   evaluation gauges), so the maintain story is visible, not just described.
+
+| | |
+| --- | --- |
+| Deploy target | Local Docker Compose only (public hosting deliberately declined) |
+| Data | Yahoo Finance daily closes via `yfinance` (optional, cached); committed synthetic fixtures for everything offline |
+| Models | persistence baseline + sklearn `HistGradientBoostingRegressor`, both untuned |
+| Validation | expanding-origin walk-forward, strict one-step-ahead, two dedicated leak-detection tests |
+| Drift detection | PSI (5 quantile bins) + KS test on daily log returns; documented retrain signal PSI >= 0.25 or KS p <= 0.01 |
+| Maintain | drift-gated retrain into NEW versioned bundles (never overwrites) + validated pointer rollback |
+| Backend tests | 88 passing, offline and deterministic (`make test`) |
+| Honest scope | educational only; nothing here is investment advice; no auth, no TLS, no multi-user serving |
+
+## Architecture at a glance
+
+```mermaid
+flowchart TD
+    CLI["CLI (cli.py)<br>offline eval + drift commands"] --> W["Walk-forward harness (walkforward.py)<br>expanding origin, one-step-ahead"]
+    F["FastAPI service (app.py)<br>/health · /forecast · /drift<br>/metrics · /metrics/prometheus"] --> W
+    W --> FE["features.py<br>lag + rolling features, no lookahead"]
+    W --> M["models.py<br>persistence baseline vs<br>HistGradientBoosting (sklearn)"]
+    W --> MET["metrics.py<br>rmse · mae · directional accuracy · edge"]
+    D["drift.py<br>PSI + KS detector"] --> F
+    D --> MT["maintain.py<br>drift-gated retrain, versioned bundles,<br>validated rollback"]
+    B["bundle.py<br>bundle save/load + manifest identity"] --> MT
+    F --> O["obs.py + prom.py<br>JSON logs + Prometheus exposition"]
+    MT --> A["artifacts/ versioned bundles<br>+ current pointer"]
+```
+
+Where things live:
+
+| Path | What it is |
+| --- | --- |
+| `src/stock_prediction/data.py` | Yahoo Finance fetch with 24 h cache; committed offline fixtures |
+| `src/stock_prediction/features.py` | Lag/rolling features with a strict no-lookahead contract |
+| `src/stock_prediction/models.py` | Persistence baseline and HistGradientBoosting (sklearn defaults) |
+| `src/stock_prediction/walkforward.py` | The model-agnostic expanding-origin harness both models share |
+| `src/stock_prediction/metrics.py` | RMSE, MAE, directional accuracy, edge |
+| `src/stock_prediction/bundle.py` | Versioned model bundles + manifest identity (config, data hash, sklearn version) |
+| `src/stock_prediction/drift.py` | PSI + KS drift detector with documented thresholds |
+| `src/stock_prediction/maintain.py` | Drift-gated retrain and pointer rollback (the Stage 6 story) |
+| `src/stock_prediction/app.py` | FastAPI service; every `/forecast` response carries a `drift` object |
+| `src/stock_prediction/obs.py`, `prom.py` | Structured JSON logs and the stdlib Prometheus endpoint |
+| `tests/` | 88 offline tests, including two leak-detection tests and a spy-model walk-forward audit |
+| `experiments/` | Recorded eval + drift logs, results CSV, and an executed incident write-up |
+| `artifacts/` | Versioned model bundles and the `current` pointer |
+| `observability/` | Prometheus scrape config + Grafana datasource/dashboard provisioning |
+| `INVENTORY.md` | Historical audit of the pre-refactor app |
+| `ROADMAP.md` | The stage-by-stage build story |
+
+## Quickstart (local, offline)
+
+```bash
+git clone https://github.com/PCSchmidt/advanced-stock-prediction-app
+cd advanced-stock-prediction-app
+make setup && make test    # pinned venv, then 88 offline tests + ruff
+
+# CLI evaluation of both models on the committed fixture:
+python -m stock_prediction.cli --fixture tests/fixtures/sample_daily.csv --model both
+
+# HTTP service + local Prometheus/Grafana (Docker Desktop required):
+docker compose up --build -d
+curl -s -X POST http://localhost:8000/forecast \
+  -H "Content-Type: application/json" -d '{"model": "both", "last_k": 5}'
+# Grafana: http://localhost:3003 (admin/admin) · Prometheus: http://localhost:9093
+```
+
+## Approach: why it is built this way
+
+- **No lookahead, proven not promised.** Features for time `t` are computed
+  only from closes strictly before `t`, and two dedicated tests enforce it:
+  one perturbs the future tail and asserts earlier feature rows are unchanged;
+  the other uses a spy model to audit every `fit` call in the walk-forward
+  loop against the origin.
+- **The baseline is honest.** Persistence runs through the identical harness
+  and is reported first. Any model in this repo is measured against what
+  "tomorrow equals today" achieves - the bar sophisticated models actually
+  struggle to clear on daily returns.
+- **Nothing is tuned.** sklearn defaults, no hyperparameter search, no
+  invented production SLOs. The recorded Stage 2 numbers in
+  `experiments/eval_log.md` are the evaluation source of truth, and the README
+  says so instead of claiming live accuracy.
+- **Retraining never destroys anything.** A retrain writes a NEW versioned
+  bundle directory (manifest: feature config, fixture hash, sklearn version,
+  git commit) and moves a pointer; rollback flips the pointer back only after
+  validating the target's identity. A quiet drift check no-ops with a clear
+  message instead of touching the model.
+- **Offline-first.** Live fetching is opt-in behind an explicit flag, cached,
+  and lazily imported; tests and CI never touch the network. Every recorded
+  number in `experiments/` is regenerable from committed fixtures.
+- **Boring, well-supported tooling.** Python + NumPy/pandas + scikit-learn +
+  FastAPI + Docker, stdlib-only Prometheus exposition - chosen so a reviewer
+  can read and run everything, not so a resume keyword list gets longer.
+
 ## Motivation
 
 The goal is to demonstrate the full AI engineering lifecycle on a financial

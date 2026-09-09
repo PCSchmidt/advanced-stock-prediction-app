@@ -10,9 +10,15 @@ This is a personal portfolio project, not production work. It must be honest, ri
 
 ## Current state (as of Sep 2026)
 
-- Dormant since Jun 2025.
-- Existing functionality: a time-series stock price predictor built as an educational tool.
-- JavaScript-based. The user is agnostic to stack, so a redesign is allowed if it serves the goal better.
+- Redesigned and complete (Python, per the guidance below): walk-forward
+  forecasting core, recorded evaluation, versioned model bundles, FastAPI
+  service with a stdlib Prometheus endpoint, drift-gated retrain + validated
+  rollback, local Prometheus + Grafana stack, 88 offline tests green.
+- Published on GitHub (PCSchmidt/advanced-stock-prediction-app; main history
+  on `master`, legacy 2024-25 lineage merged and the legacy snapshot removed).
+- Deploy target is deliberately local Docker Compose only - no public
+  endpoint, no auth/TLS claims (see README "Deploy target decision").
+- Educational only: nothing in this repo is investment advice.
 
 ## Non-negotiable requirements
 

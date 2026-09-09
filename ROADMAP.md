@@ -103,7 +103,9 @@ and outputs). No alerting exists anywhere; the stack is local compose only.
 
 ## Portfolio presentation
 
-- [ ] README tells the full lifecycle story with real numbers, emphasizing the maintain stage.
+- [x] README tells the full lifecycle story with real numbers, emphasizing the maintain stage
+  (plain-language overview + architecture map added post-publication; recorded eval/drift
+  numbers stay the source of truth; deploy-target decision stated up front).
 - [ ] Link the repo from `pcschmidt.github.io`.
 - [ ] Prepare a 3-sentence interview arc per lifecycle stage.
 
